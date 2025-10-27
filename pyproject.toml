@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepseek-cli"
+version = "0.1.0"
+description = "Developer-focused DeepSeek command line tools"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "DeepSeek CLI Maintainers" }
+]
+license = "MIT"
+dependencies = [
+  "openai>=1.13.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/deepseek/deepseek-cli"
+
+[project.scripts]
+deepseek = "deepseek_cli.cli:main"
+deepseek-cli = "deepseek_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["deepseek_cli*"]

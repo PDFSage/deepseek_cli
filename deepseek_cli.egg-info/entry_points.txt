@@ -1,0 +1,3 @@
+[console_scripts]
+deepseek = deepseek_cli.cli:main
+deepseek-cli = deepseek_cli.cli:main

@@ -1,0 +1,16 @@
+LICENSE
+README.md
+pyproject.toml
+deepseek_cli/__init__.py
+deepseek_cli/__main__.py
+deepseek_cli/agent.py
+deepseek_cli/chat.py
+deepseek_cli/cli.py
+deepseek_cli/config.py
+deepseek_cli/constants.py
+deepseek_cli.egg-info/PKG-INFO
+deepseek_cli.egg-info/SOURCES.txt
+deepseek_cli.egg-info/dependency_links.txt
+deepseek_cli.egg-info/entry_points.txt
+deepseek_cli.egg-info/requires.txt
+deepseek_cli.egg-info/top_level.txt
