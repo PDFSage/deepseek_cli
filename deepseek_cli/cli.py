@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import sys
 import textwrap
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+from packaging.version import Version
 
 from openai import OpenAI
 
@@ -24,7 +28,7 @@ from .config import (
     save_config,
     update_config,
 )
-from .constants import CONFIG_FILE, TRANSCRIPTS_DIR
+from .constants import AUTO_TEST_FOLLOW_UP, CONFIG_FILE, DEFAULT_MAX_STEPS, TRANSCRIPTS_DIR
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--max-steps",
         type=int,
-        default=20,
+        default=DEFAULT_MAX_STEPS,
         help="Maximum reasoning steps before aborting",
     )
     agent_parser.add_argument(
@@ -136,12 +140,40 @@ def create_client(config: ResolvedConfig) -> OpenAI:
     return OpenAI(api_key=config.api_key, base_url=config.base_url)
 
 
+def notify_if_update_available() -> None:
+    url = "https://pypi.org/pypi/deepseek-agent/json"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            payload = json.load(response)
+    except Exception:  # pragma: no cover - best effort
+        return
+    releases = payload.get("releases") or {}
+    versions = sorted(
+        (Version(v) for v in releases.keys() if releases.get(v)),
+        reverse=True,
+    )
+    if not versions:
+        return
+    latest = versions[0]
+    current = Version(__version__)
+    if latest > current:
+        print(
+            textwrap.dedent(
+                f"""
+                [update] A newer deepseek-agent release is available: {latest} (current {current}).
+                Update with: python -m pip install --upgrade deepseek-agent
+                """
+            ).strip(),
+            file=sys.stderr,
+        )
+
+
 @dataclass
 class InteractiveSessionState:
     workspace: Path
     model: str
     system_prompt: str
-    max_steps: int = 20
+    max_steps: int = DEFAULT_MAX_STEPS
     read_only: bool = False
     verbose: bool = True
     transcript_path: Optional[Path] = None
@@ -460,6 +492,7 @@ def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
             prompt_lines.append(continuation.rstrip())
         final_prompt = "\n".join(line.strip() for line in prompt_lines if line.strip())
         follow_ups = _collect_follow_ups()
+        follow_ups.append(AUTO_TEST_FOLLOW_UP)
         if not final_prompt:
             continue
         _run_interactive_agent_prompt(client, state, final_prompt, follow_ups)
@@ -483,7 +516,7 @@ def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         model=args.model or resolved.model,
         system_prompt=args.system or resolved.system_prompt,
         user_prompt=args.prompt,
-        follow_up=args.follow_up,
+        follow_up=(args.follow_up or []) + [AUTO_TEST_FOLLOW_UP],
         workspace=workspace,
         read_only=args.read_only,
         max_steps=args.max_steps,
@@ -547,6 +580,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.version:
         print(__version__)
         return 0
+
+    notify_if_update_available()
 
     if args.command == "config":
         return handle_config(args)
