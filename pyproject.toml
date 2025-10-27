@@ -3,8 +3,8 @@ requires = ["setuptools>=65", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deepseek-cli"
-version = "0.1.0"
+name = "deepseek_agent"
+version = "0.1.2"
 description = "Developer-focused DeepSeek command line tools"
 readme = "README.md"
 requires-python = ">=3.9"

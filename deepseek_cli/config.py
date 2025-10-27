@@ -119,8 +119,9 @@ def resolve_runtime_config(
     )
     if not resolved_api_key:
         raise RuntimeError(
-            "API key required. Set via CLI option, environment variable, "
-            f"or configure it with 'deepseek config set api_key YOUR_KEY'."
+            "No DeepSeek API key found. Visit https://platform.deepseek.com/api_keys "
+            "to create one, then run 'deepseek config set api_key YOUR_KEY' or set "
+            "the DEEPSEEK_API_KEY environment variable."
         )
 
     resolved = ResolvedConfig(

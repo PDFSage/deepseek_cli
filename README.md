@@ -1,5 +1,7 @@
 # DeepSeek CLI
 
+https://pypi.org/project/deepseek-agent/
+
 Developer-focused command line tools for working with DeepSeek models. The CLI
 packages both an interactive chat shell and an agentic coding assistant with
 repository-aware tooling, plus configuration helpers and transcript logging.
@@ -25,12 +27,12 @@ repository-aware tooling, plus configuration helpers and transcript logging.
 ### From PyPI (recommended once released)
 ```bash
 python -m pip install --upgrade pip
-python -m pip install deepseek-cli
+python -m pip install deepseek-agent
 ```
 
 To upgrade later:
 ```bash
-python -m pip install --upgrade deepseek-cli
+python -m pip install --upgrade deepseek-agent
 ```
 
 ### From GitHub
@@ -38,9 +40,9 @@ Install the latest commit directly from GitHub:
 ```bash
 python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@main"
 ```
-Specify a tag (for example `v0.1.0`) to pin a release:
+Specify a tag (for example `v0.1.2`) to pin a release:
 ```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.0"
+python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.2"
 ```
 
 ### From a local clone
@@ -75,6 +77,17 @@ deepseek config unset model
 If the config directory is unwritable, fall back to environment variables.
 
 ## Usage
+
+### Interactive agent (default)
+Running `deepseek` with no arguments launches the interactive coding agent,
+similar to Claude Code or the Gemini CLI. The shell waits for the agent to
+initialise, then prompts for your request. Commands starting with `:` adjust the
+session (for example `:workspace`, `:model`, `:read-only`, `:transcript`, and
+`:help`). Each request can include optional follow-up lines; press Enter on an
+empty line to run the agent.
+
+If no API key is configured, the CLI exits with instructions to create one at
+https://platform.deepseek.com/api_keys.
 
 ### Verify installation
 ```bash
@@ -148,7 +161,7 @@ forwards the call to `deepseek agent`, so existing automation keeps working.
    python -m twine upload dist/*
    ```
 
-After publishing, users can install with `pip install deepseek-cli`.
+After publishing, users can install with `pip install deepseek-agent`.
 
 ## Development
 - `python -m deepseek_cli --version` exercises the module entry point.
