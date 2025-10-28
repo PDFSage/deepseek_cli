@@ -28,7 +28,7 @@ from .config import (
     save_config,
     update_config,
 )
-from .constants import AUTO_TEST_FOLLOW_UP, CONFIG_FILE, DEFAULT_MAX_STEPS, TRANSCRIPTS_DIR
+from .constants import AUTO_BUG_FOLLOW_UP, AUTO_TEST_FOLLOW_UP, CONFIG_FILE, DEFAULT_MAX_STEPS, TRANSCRIPTS_DIR
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -522,7 +522,7 @@ def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
             prompt_lines.append(continuation.rstrip())
         final_prompt = "\n".join(line.strip() for line in prompt_lines if line.strip())
         follow_ups = _collect_follow_ups()
-        follow_ups.append(AUTO_TEST_FOLLOW_UP)
+        follow_ups.extend([AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP])
         if not final_prompt:
             continue
         _run_interactive_agent_prompt(client, state, final_prompt, follow_ups)
@@ -546,7 +546,7 @@ def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         model=args.model or resolved.model,
         system_prompt=args.system or resolved.system_prompt,
         user_prompt=args.prompt,
-        follow_up=(args.follow_up or []) + [AUTO_TEST_FOLLOW_UP],
+        follow_up=(args.follow_up or []) + [AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP],
         workspace=workspace,
         read_only=args.read_only,
         allow_global_access=getattr(args, "allow_global", False),
