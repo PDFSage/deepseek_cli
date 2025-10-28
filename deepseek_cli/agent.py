@@ -423,6 +423,14 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
     for step in range(1, options.max_steps + 1):
         if options.verbose:
             print(f"\n[agent] Requesting model step {step}…", file=sys.stderr)
+            last_message = messages[-1]
+            print(
+                "[state] Last message type:",
+                last_message.get("role"),
+                "| tokens:",
+                len(str(last_message.get("content", ""))),
+                file=sys.stderr,
+            )
         response = client.chat.completions.create(
             model=options.model,
             messages=messages,
@@ -457,7 +465,13 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                     result = f"Failed to decode arguments for {name}: {exc}"
                 else:
                     if options.verbose:
-                        print(f"[tool] {name}({arguments})", file=sys.stderr)
+                        print(
+                            f"[tool] {name}({arguments})", file=sys.stderr
+                        )
+                        print(
+                            f"[plan] Executing {name} to advance step {step}…",
+                            file=sys.stderr,
+                        )
                     try:
                         result = execute_tool(executor, name, arguments)
                     except Exception as exc:  # pragma: no cover
@@ -483,6 +497,8 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
             messages.append(assistant_message)
             log_to_transcript(assistant_message, step_index=step)
             print(content)
+            if options.verbose:
+                print("[plan] Assistant produced final answer; ending loop.", file=sys.stderr)
             return
     if transcript_path:
         try:
@@ -499,6 +515,8 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
             "Re-run with a higher --max-steps or provide --transcript to inspect the conversation."
         )
     print(message, file=sys.stderr)
+    if options.verbose:
+        print("[plan] Reached maximum steps without completion.", file=sys.stderr)
 
 
 __all__ = [

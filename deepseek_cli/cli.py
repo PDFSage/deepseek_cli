@@ -424,21 +424,8 @@ def _handle_interactive_command(
 
 
 def _collect_follow_ups() -> List[str]:
-    follow_ups: List[str] = []
-    while True:
-        try:
-            line = input("  Follow-up (press Enter to run) › ")
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print()
-            break
-        stripped = line.strip()
-        if not stripped:
-            break
-        follow_ups.append(stripped)
-    return follow_ups
+    # Follow-ups are no longer collected via an additional prompt; return empty list.
+    return []
 
 
 def _run_interactive_agent_prompt(

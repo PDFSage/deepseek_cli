@@ -39,9 +39,9 @@ Install the latest commit directly from GitHub:
 ```bash
 python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@main"
 ```
-Specify a tag (for example `v0.1.9`) to pin a release:
+Specify a tag (for example `v0.1.11`) to pin a release:
 ```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.9"
+python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.11"
 ```
 
 ### From a local clone
@@ -82,8 +82,8 @@ Running `deepseek` with no arguments launches the interactive coding agent,
 similar to Claude Code or the Gemini CLI. The shell waits for the agent to
 initialise, then prompts for your request. Commands starting with `:` adjust the
 session (for example `:workspace`, `:model`, `:read-only`, `:transcript`, and
-`:help`). Exit with `:quit` or `Ctrl+C`. Each request can include optional
-follow-up lines; press Enter on an empty line to run the agent. The assistant
+`:help`). Exit with `:quit` or `Ctrl+C`. Each request now runs immediately—include
+any follow-up guidance in your initial prompt. The assistant
 also appends an internal instruction to run automated tests and continue
 iterating until they pass (or a clear justification is recorded).
 Use `:global on` if you want the agent to edit files outside the current

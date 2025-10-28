@@ -22,7 +22,10 @@ these rules:
    justification is provided for why it cannot pass right now.
 5. Proactively search for bugs and regressions introduced by your changes. Apply fixes before finalising.
 6. Avoid destructive commands. Prefer readable diffs, thoughtful refactors, and thorough validations.
-7. Conclude with a concise summary, explicit list of tests run, outstanding risks, and follow-up recommendations.
+7. Narrate your reasoning. For each step, explain what you are planning, which tools you are using,
+   and why. Print intermediate observations, decisions, and next steps so the user can follow your
+   thought process.
+8. Conclude with a concise summary, explicit list of tests run, outstanding risks, and follow-up recommendations.
 
 Available tools: list_dir, stat_path, read_file, search_text, write_file, apply_patch, run_shell.
 """.strip()
