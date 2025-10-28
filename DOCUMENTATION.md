@@ -1,0 +1,139 @@
+# DeepSeek CLI Internal Architecture
+
+This document explains how the DeepSeek command line interface (CLI) works under the hood. It covers
+package layout, execution flow, configuration resolution, and the implementation details for the
+`chat`, `agent`, and `config` command groups. Paths below are relative to the repository root.
+
+## Package Layout and Entry Points
+- `pyproject.toml` registers two console scripts (`deepseek` and `deepseek-cli`) that both call
+  `deepseek_cli.cli:main`. Invoking `python -m deepseek_cli` goes through `deepseek_cli/__main__.py`
+  and ultimately hits the same `main()` function.
+- `deepseek_agentic_cli.py` is a legacy shim that prints a warning and forwards arguments to the new
+  `deepseek agent` subcommand so existing automation keeps working.
+- `deepseek_cli/__init__.py` exposes the package version (`__version__`), used for `--version` output
+  and update checks.
+
+The package depends on `openai` ≥ 1.13.3 for Chat Completions API access and `packaging` for version
+comparison. All other functionality is implemented locally.
+
+## Configuration Resolution (`deepseek_cli/config.py`)
+Configuration values come from three layers, resolved at runtime in the following order (highest
+priority first):
+1. Command line flags such as `--api-key` and `--model`.
+2. Environment variables (`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`,
+   `DEEPSEEK_SYSTEM_PROMPT`).
+3. The JSON config file at `~/.config/deepseek-cli/config.json`.
+
+`ensure_config_dir()` creates the config directory on demand. `load_config()` merges the persisted JSON
+with built-in defaults. `resolve_runtime_config()` validates that an API key is available, then builds a
+`ResolvedConfig` dataclass that includes both agent and chat defaults. Saving and updating values flow
+through `save_config()` and `update_config()`, which both filter unknown keys and persist the combined
+(default + overrides) payload.
+
+## CLI Wiring and Command Dispatch (`deepseek_cli/cli.py`)
+`build_parser()` constructs a single `argparse.ArgumentParser` with three subcommands:
+- `chat`: developer-focused chat sessions (single-turn or interactive).
+- `agent`: multi-step agentic workflows with repository-aware tools.
+- `config`: configuration inspection and mutation helpers.
+
+Global flags include `--version`. For subcommands, shared connection options (`--api-key`, `--base-url`)
+are attached via `add_shared_connection_options()`.
+
+`main()` is the top-level dispatcher:
+1. Parse arguments and return immediately if `--version` is requested.
+2. Perform a best-effort release check against PyPI (`notify_if_update_available()`).
+3. If the `config` subcommand is selected, route to `handle_config()` without contacting the API.
+4. Otherwise, call `resolve_runtime_config()` to assemble a `ResolvedConfig` from CLI options,
+   environment variables, and stored JSON.
+5. With no subcommand the CLI launches the interactive agent shell. With `chat` or `agent`, it routes
+   to `handle_chat()` or `handle_agent()` respectively.
+
+## Transcript Handling
+Both chat and agent modes support transcripts. When the user supplies `--transcript`:
+- Chat mode writes each turn as a JSON object appended to the selected file. Relative paths default to
+  `~/.config/deepseek-cli/transcripts/`.
+- Agent mode resolves relative transcript paths inside the workspace so outputs stay co-located with
+  project files. Each logged message stores the step index along with the raw OpenAI message payload.
+
+## Chat Workflow (`deepseek_cli/chat.py`)
+`ChatOptions` captures all user-configurable parameters. `run_chat()` builds the initial message set
+(system + user) and calls `client.chat.completions.create`:
+- In streaming mode (`--no-stream` absent), the CLI prints tokens incrementally as they arrive.
+- Otherwise it issues a standard chat completion and prints the full reply.
+
+Interactive chats loop, prompting the user (`You ▸`) until EOF. Non-interactive or single-turn calls exit
+after the first assistant reply. Every turn is optionally logged to the transcript file.
+
+## Agent Workflow Overview (`deepseek_cli/agent.py`)
+### Input Preparation
+`handle_agent()` (non-interactive) and `run_interactive_agent_shell()` (interactive) both build an
+`AgentOptions` instance containing:
+- Model, system prompt, initial user prompt, and any follow-up prompts.
+- Workspace path, read-only flag, and `allow_global_access` flag (permits edits outside the workspace).
+- Max reasoning steps, verbosity toggle, and transcript path.
+
+Agent invocations append two hidden follow-ups (`AUTO_TEST_FOLLOW_UP` and `AUTO_BUG_FOLLOW_UP`) so the
+model automatically plans to run tests and regression checks before finishing.
+
+### Interactive Shell
+Running `deepseek` with no arguments enters an interactive agent shell. The shell maintains an
+`InteractiveSessionState` that tracks mutable session settings (workspace, model, system prompt,
+max steps, read-only, transcript destination, etc.). Lines beginning with `:` are interpreted as control
+commands (`:workspace`, `:model`, `:system`, `:max-steps`, `:read-only`, `:global`, `:transcript`,
+`:reset`, `:help`, `:quit`). Regular prompts are sent to the agent loop.
+
+### Tool Execution
+`ToolExecutor` exposes the functions the language model can call during reasoning. Each tool validates
+paths against the workspace root unless `allow_global_access` is enabled:
+- `list_dir(path=".", recursive=False)`: hierarchical directory listings capped by `MAX_LIST_DEPTH`.
+- `read_file(path, offset=0, limit=None)`: returns file contents or slices.
+- `write_file(path, content, create_parents=False)`: writes text unless the session is read-only.
+- `stat_path(path=".")`: JSON metadata describing file size, type, and timestamps.
+- `search_text(pattern, path=".", case_sensitive=True, max_results=200)`: wraps ripgrep (`rg`) when
+  available, otherwise falls back to `grep`.
+- `apply_patch(patch)`: applies unified diffs using `patch` or `git apply`, with guards against paths
+  escaping the workspace.
+- `run_shell(command, timeout=120)`: executes `/bin/bash -lc` inside the workspace and returns stdout,
+  stderr, and exit status. Long outputs are truncated to `MAX_TOOL_RESULT_CHARS`.
+
+### Agent Loop
+`agent_loop()` orchestrates the conversation with the API:
+1. Build the initial message list (`system`, `user`, and follow-up prompts) via `build_messages()`.
+2. Register tool schemas (`tool_schemas()`) so the model may choose function calls.
+3. For each step up to `max_steps`:
+   - Request a chat completion with `tool_choice="auto"`.
+   - If the assistant returns tool calls, decode arguments (JSON), run each tool through the
+     `ToolExecutor`, append the tool results to the message stack, and log them to transcripts.
+   - If the assistant returns plain text, echo it to stdout and terminate successfully.
+4. If `max_steps` is reached without a final reply, print guidance suggesting a rerun or transcript
+   inspection.
+
+Verbose mode (`--quiet` absent) prints debug information to stderr describing the active step, last
+message size, and tool invocations to help users understand the agent’s reasoning process.
+
+## Configuration Subcommands (`handle_config`)
+`deepseek config show` reads the stored JSON and optionally redacts the API key before printing.
+`config set` and `config unset` update individual fields via `update_config()` / `save_config()`.
+`config init` prompts for a key, writes it to the config file, and gracefully handles EOF/permission
+errors.
+
+## Update Notifications
+At startup (except for `deepseek config`), `notify_if_update_available()` fetches metadata from PyPI
+(`https://pypi.org/pypi/deepseek-agent/json`), parses known releases with `packaging.version.Version`,
+and compares the highest version against the bundled `__version__`. When a newer release exists, the CLI
+prints upgrade instructions to stderr but continues executing.
+
+## Error Handling and Safeguards
+- Missing API keys abort early with a descriptive error.
+- Workspace paths are resolved and validated before invoking the agent. Non-existent directories cause a
+  non-zero exit.
+- Tool operations include explicit guardrails for read-only sessions and workspace escape attempts.
+- Long tool outputs are truncated to keep conversation context manageable.
+- Shell commands include timeouts to avoid runaway processes.
+
+## Distribution Notes
+- `Formula/` and `build/` house packaging artifacts (e.g., Homebrew formulas) but do not affect runtime.
+- The CLI targets Python ≥ 3.9 and carries an MIT license (`LICENSE`).
+
+Together, these components implement a developer-focused interface over the DeepSeek models that
+balances ease of use with the guardrails required for safe repository automation.
