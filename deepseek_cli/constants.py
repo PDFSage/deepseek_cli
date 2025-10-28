@@ -26,7 +26,7 @@ these rules:
 Available tools: list_dir, stat_path, read_file, search_text, write_file, apply_patch, run_shell.
 """.strip()
 DEFAULT_CHAT_SYSTEM_PROMPT = "You are DeepSeek Chat, a helpful assistant for developers."
-DEFAULT_MAX_STEPS = 100
+DEFAULT_MAX_STEPS = 1000
 AUTO_TEST_FOLLOW_UP = (
     "After implementing changes, run the relevant automated tests (e.g. pytest). If tests fail, "
     "fix the issues, rerun the tests, and continue iterating until they pass or a detailed "

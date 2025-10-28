@@ -1,5 +1,7 @@
 # DeepSeek CLI
 
+> This CLI is open source at https://github.com/PDFSage/deepseek_cli – collaborators and maintainers are welcome! Submit ideas, issues, or pull requests to help the project grow.
+
 https://pypi.org/project/deepseek-agent/
 
 Developer-focused command line tools for working with DeepSeek models. The CLI
@@ -30,19 +32,16 @@ python -m pip install --upgrade pip
 python -m pip install deepseek-agent
 ```
 
-To upgrade later:
-```bash
-python -m pip install --upgrade deepseek-agent
-```
+To update later, run `python -m pip install --upgrade deepseek-agent`.
 
 ### From GitHub
 Install the latest commit directly from GitHub:
 ```bash
 python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@main"
 ```
-Specify a tag (for example `v0.1.4`) to pin a release:
+Specify a tag (for example `v0.1.7`) to pin a release:
 ```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.4"
+python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.7"
 ```
 
 ### From a local clone
@@ -87,6 +86,8 @@ session (for example `:workspace`, `:model`, `:read-only`, `:transcript`, and
 follow-up lines; press Enter on an empty line to run the agent. The assistant
 also appends an internal instruction to run automated tests and continue
 iterating until they pass (or a clear justification is recorded).
+Use `:global on` if you want the agent to edit files outside the current
+workspace root (highly privileged; defaults to off).
 
 If no API key is configured, the CLI exits with instructions to create one at
 https://platform.deepseek.com/api_keys.
@@ -122,6 +123,8 @@ deepseek agent "Refactor the HTTP client" \
 ```
 - The agent uses repository-aware tools: list directories, read/write files,
   apply patches, run shell commands, and search text.
+- Pass `--global` to permit edits outside the workspace root when you need
+  system-wide changes.
 - Add `--follow-up "Also add tests"` for additional prompts.
 - Use `--read-only` to prevent write operations and `--quiet` to suppress
   progress logs.

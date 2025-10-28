@@ -29,6 +29,7 @@ class AgentOptions:
     follow_up: List[str]
     workspace: Path
     read_only: bool
+    allow_global_access: bool
     max_steps: int
     verbose: bool
     transcript_path: Optional[Path]
@@ -41,9 +42,10 @@ class ToolExecutor:
     root: Path
     encoding: str = "utf-8"
     read_only: bool = False
+    allow_global_access: bool = False
 
     def list_dir(self, path: str = ".", recursive: bool = False) -> ToolResult:
-        target = _ensure_within_root(self.root, path)
+        target = _ensure_within_root(self.root, path, self.allow_global_access)
         if not target.exists():
             return f"Path '{path}' does not exist."
 
@@ -63,7 +65,7 @@ class ToolExecutor:
         return "\n".join(lines)
 
     def read_file(self, path: str, offset: int = 0, limit: Optional[int] = None) -> ToolResult:
-        target = _ensure_within_root(self.root, path)
+        target = _ensure_within_root(self.root, path, self.allow_global_access)
         if not target.exists():
             return f"File '{path}' does not exist."
         if not target.is_file():
@@ -79,7 +81,7 @@ class ToolExecutor:
     def write_file(self, path: str, content: str, create_parents: bool = False) -> ToolResult:
         if self.read_only:
             return "Write operations are disabled (read-only mode)."
-        target = _ensure_within_root(self.root, path)
+        target = _ensure_within_root(self.root, path, self.allow_global_access)
         if create_parents:
             target.parent.mkdir(parents=True, exist_ok=True)
         if not target.parent.exists():
@@ -91,7 +93,7 @@ class ToolExecutor:
         return f"Wrote {len(content)} characters to '{path}'."
 
     def stat_path(self, path: str = ".") -> ToolResult:
-        target = _ensure_within_root(self.root, path)
+        target = _ensure_within_root(self.root, path, self.allow_global_access)
         if not target.exists():
             return f"Path '{path}' does not exist."
         stats = target.stat()
@@ -112,7 +114,7 @@ class ToolExecutor:
         case_sensitive: bool = True,
         max_results: int = 200,
     ) -> ToolResult:
-        target = _ensure_within_root(self.root, path)
+        target = _ensure_within_root(self.root, path, self.allow_global_access)
         if not target.exists():
             return f"Search path '{path}' does not exist."
         if not pattern:
@@ -160,6 +162,8 @@ class ToolExecutor:
             return "Patch content is empty."
 
         def _safe_path(text: str) -> bool:
+            if self.allow_global_access:
+                return True
             text = text.strip()
             if text in {"/dev/null", "a/", "b/"}:
                 return True
@@ -235,12 +239,21 @@ class ToolExecutor:
         return "\n".join(lines)
 
 
-def _ensure_within_root(root: Path, path: str) -> Path:
-    candidate = (root / path).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Path '{path}' escapes the workspace root") from exc
+def _ensure_within_root(root: Path, path: str, allow_global: bool) -> Path:
+    return _resolve_path(root, path, allow_global=allow_global)
+
+
+def _resolve_path(root: Path, path: str, allow_global: bool) -> Path:
+    raw = Path(path).expanduser()
+    if raw.is_absolute():
+        candidate = raw.resolve()
+    else:
+        candidate = (root / raw).resolve()
+    if not allow_global:
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Path '{path}' escapes the workspace root") from exc
     return candidate
 
 
@@ -387,7 +400,11 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
     specs = tool_schemas()
 
     transcript_path = options.transcript_path
-    executor = ToolExecutor(options.workspace, read_only=options.read_only)
+    executor = ToolExecutor(
+        options.workspace,
+        read_only=options.read_only,
+        allow_global_access=options.allow_global_access,
+    )
 
     if transcript_path:
         transcript_path.parent.mkdir(parents=True, exist_ok=True)

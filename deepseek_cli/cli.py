@@ -90,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional transcript path (default stored under ~/.config/deepseek-cli)",
     )
     agent_parser.add_argument("--read-only", action="store_true", help="Disable write operations")
+    agent_parser.add_argument(
+        "--global",
+        action="store_true",
+        dest="allow_global",
+        help="Allow edits outside the workspace root (use with caution)",
+    )
     agent_parser.add_argument("--quiet", action="store_true", help="Suppress progress logs")
     add_shared_connection_options(agent_parser)
 
@@ -175,6 +181,7 @@ class InteractiveSessionState:
     system_prompt: str
     max_steps: int = DEFAULT_MAX_STEPS
     read_only: bool = False
+    allow_global_access: bool = False
     verbose: bool = True
     transcript_path: Optional[Path] = None
     default_workspace: Path = field(init=False)
@@ -182,6 +189,7 @@ class InteractiveSessionState:
     default_system_prompt: str = field(init=False)
     default_max_steps: int = field(init=False)
     default_read_only: bool = field(init=False)
+    default_allow_global_access: bool = field(init=False)
     default_verbose: bool = field(init=False)
     default_transcript_path: Optional[Path] = field(init=False)
 
@@ -191,6 +199,7 @@ class InteractiveSessionState:
         self.default_system_prompt = self.system_prompt
         self.default_max_steps = self.max_steps
         self.default_read_only = self.read_only
+        self.default_allow_global_access = self.allow_global_access
         self.default_verbose = self.verbose
         self.default_transcript_path = self.transcript_path
 
@@ -230,6 +239,7 @@ def _format_session_status(state: InteractiveSessionState) -> str:
         f"System    : {('custom' if state.system_prompt != state.default_system_prompt else 'default')} prompt",
         f"Read-only : {'on' if state.read_only else 'off'}",
         f"Max steps : {state.max_steps}",
+        f"Global ops: {'on' if state.allow_global_access else 'off'}",
         f"Verbose   : {'on' if state.verbose else 'off'}",
     ]
     if state.transcript_path:
@@ -249,6 +259,7 @@ def _print_interactive_help() -> None:
           :max-steps [N]        Show or change the max reasoning steps
           :read-only [on|off]   Toggle write access to the workspace
           :verbose / :quiet     Enable or disable tool logging
+          :global [on|off]      Allow editing outside the workspace root
           :transcript [PATH]    Write transcripts to PATH (relative to workspace)
           :clear-transcript     Stop writing transcripts
           :settings             Display the current session settings
@@ -352,6 +363,23 @@ def _handle_interactive_command(
             return True
         print(f"Read-only mode {'enabled' if state.read_only else 'disabled'}.")
         return True
+    if name == "global":
+        if not args:
+            print(f"Global operations: {'on' if state.allow_global_access else 'off'}")
+            return True
+        setting = args[0].lower()
+        if setting in {"on", "true", "1"}:
+            state.allow_global_access = True
+        elif setting in {"off", "false", "0"}:
+            state.allow_global_access = False
+        elif setting == "toggle":
+            state.allow_global_access = not state.allow_global_access
+        else:
+            print("Use on/off/toggle to control global operations.", file=sys.stderr)
+            return True
+        message = "enabled (paths may escape workspace)" if state.allow_global_access else "disabled"
+        print(f"Global operations {message}.")
+        return True
     if name == "verbose":
         state.verbose = True
         print("Verbose tool logging enabled.")
@@ -384,6 +412,7 @@ def _handle_interactive_command(
         state.system_prompt = state.default_system_prompt
         state.max_steps = state.default_max_steps
         state.read_only = state.default_read_only
+        state.allow_global_access = state.default_allow_global_access
         state.verbose = state.default_verbose
         state.transcript_path = state.default_transcript_path
         print("Session settings reset to defaults.")
@@ -432,6 +461,7 @@ def _run_interactive_agent_prompt(
         follow_up=follow_ups,
         workspace=workspace,
         read_only=state.read_only,
+        allow_global_access=state.allow_global_access,
         max_steps=state.max_steps,
         verbose=state.verbose,
         transcript_path=state.transcript_path,
@@ -519,6 +549,7 @@ def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         follow_up=(args.follow_up or []) + [AUTO_TEST_FOLLOW_UP],
         workspace=workspace,
         read_only=args.read_only,
+        allow_global_access=getattr(args, "allow_global", False),
         max_steps=args.max_steps,
         verbose=not args.quiet,
         transcript_path=transcript_path,
