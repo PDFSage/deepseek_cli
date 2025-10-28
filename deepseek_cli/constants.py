@@ -38,6 +38,7 @@ AUTO_BUG_FOLLOW_UP = (
     "Actively look for bugs or regressions caused by recent changes. If any issues are detected, "
     "update the plan as needed, apply fixes, and re-run verification until the repository is stable."
 )
+MAX_TOOL_RESULT_CHARS = 12000
 CONFIG_DIR = Path.home() / ".config" / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
@@ -59,4 +60,5 @@ __all__ = [
     "DEFAULT_MAX_STEPS",
     "AUTO_TEST_FOLLOW_UP",
     "AUTO_BUG_FOLLOW_UP",
+    "MAX_TOOL_RESULT_CHARS",
 ]

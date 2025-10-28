@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from openai import OpenAI
 
-from .constants import MAX_LIST_DEPTH
+from .constants import MAX_LIST_DEPTH, MAX_TOOL_RESULT_CHARS
 
 ToolResult = str
 
@@ -462,6 +462,14 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                         result = execute_tool(executor, name, arguments)
                     except Exception as exc:  # pragma: no cover
                         result = f"Tool '{name}' raised an error: {exc}"
+                if isinstance(result, str) and len(result) > MAX_TOOL_RESULT_CHARS:
+                    original_len = len(result)
+                    result = (
+                        result[:MAX_TOOL_RESULT_CHARS]
+                        + "\n… output truncated to "
+                        + str(MAX_TOOL_RESULT_CHARS)
+                        + f" characters (original length {original_len})."
+                    )
                 tool_message = {
                     "role": "tool",
                     "tool_call_id": tool_call.id,

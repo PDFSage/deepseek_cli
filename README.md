@@ -39,9 +39,9 @@ Install the latest commit directly from GitHub:
 ```bash
 python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@main"
 ```
-Specify a tag (for example `v0.1.8`) to pin a release:
+Specify a tag (for example `v0.1.9`) to pin a release:
 ```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.8"
+python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.9"
 ```
 
 ### From a local clone
@@ -91,6 +91,8 @@ workspace root (highly privileged; defaults to off). The agent continually
 revises its plan when new information appears, hunts for regressions introduced
 by recent changes, and keeps iterating until both tests and bug checks are
 clean.
+Tool outputs are automatically truncated to stay within the model's context
+window—ask for narrower queries or targeted reads if you need more detail.
 
 If no API key is configured, the CLI exits with instructions to create one at
 https://platform.deepseek.com/api_keys.
@@ -130,6 +132,8 @@ deepseek agent "Refactor the HTTP client" \
   system-wide changes.
 - The agent automatically watches for regressions, replans on the fly, and
   fixes issues before finishing.
+- Tool outputs are truncated to keep prompts within context limits; refine
+  commands or request additional detail if necessary.
 - Add `--follow-up "Also add tests"` for additional prompts.
 - Use `--read-only` to prevent write operations and `--quiet` to suppress
   progress logs.
