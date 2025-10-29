@@ -13,6 +13,12 @@ repository-aware tooling, plus configuration helpers and transcript logging.
   DeepSeek API, optional read-only mode, transcripts, and workspace controls.
 - Chat mode (`deepseek chat`) supports single-response or interactive
   conversations with streaming output and transcript capture.
+- Completions mode (`deepseek completions`) mirrors Codex-style code/text
+  completions with optional streaming renderers and file output.
+- Embeddings mode (`deepseek embeddings`) batches text snippets and renders
+  vectors as JSON, tabular previews, or plain values for quick inspection.
+- Models view (`deepseek models`) enumerates the available DeepSeek API models
+  with rich filtering or JSON export for automation.
 - Config mode (`deepseek config`) manages stored defaults while respecting
   environment variable overrides.
 - Interactive mode now launches a colourful Rich-powered shell that surfaces
@@ -64,7 +70,9 @@ developing.
 The CLI resolves settings in the following order:
 1. Command line flags (`--api-key`, `--base-url`, `--model`, etc.).
 2. Environment variables: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
-   `DEEPSEEK_MODEL`, `DEEPSEEK_SYSTEM_PROMPT`.
+   `DEEPSEEK_MODEL`, `DEEPSEEK_SYSTEM_PROMPT`, `DEEPSEEK_CHAT_MODEL`,
+   `DEEPSEEK_COMPLETION_MODEL`, `DEEPSEEK_EMBEDDING_MODEL`,
+   `DEEPSEEK_CHAT_STREAM_STYLE`.
 3. Stored configuration file at `~/.config/deepseek-cli/config.json`.
 
 Helpful commands:
@@ -73,6 +81,8 @@ deepseek config init        # Guided prompt to store your API key
 deepseek config show        # Display the current configuration (API key redacted)
 deepseek config show --raw  # Show the API key in plain text
 deepseek config set model deepseek-reasoner  # Update an individual field
+deepseek config set completion_model deepseek-coder
+deepseek config set chat_stream_style markdown
 deepseek config unset model
 ```
 
@@ -121,7 +131,40 @@ deepseek chat --interactive --model deepseek-reasoner \
 - `--no-stream` disables live token streaming.
 - `--temperature`, `--top-p`, and `--max-tokens` mirror the OpenAI Chat
   Completions API.
+- `--stream-style` swaps between `plain`, `markdown`, or `rich` streaming
+  renderers (defaults to the stored configuration).
 - Provide `--transcript` to log each exchange to JSONL for later review.
+
+### Completions mode
+```bash
+deepseek completions "def fib(n):" --max-tokens 128
+
+deepseek completions --input-file snippet.py --stream-style rich --output completion.txt
+```
+- Matches Codex-style behaviour with `--stream-style` support and optional
+  file-backed prompts (`--input-file`).
+- `--stop` may be supplied multiple times to register stop sequences.
+- Pipe prompts via stdin when omitting the positional `prompt`.
+
+### Embeddings mode
+```bash
+deepseek embeddings "vectorize me" "and me"
+
+deepseek embeddings --input-file sentences.txt --format json --output embeddings.json
+```
+- Outputs tabular previews by default, with optional JSON (`--format json`) or
+  whitespace-delimited vectors (`--format plain`).
+- Supply repeated positional text values, a newline-delimited file, or stdin.
+- `--show-dimensions` reveals the embedding length alongside previews.
+
+### Model listing
+```bash
+deepseek models
+deepseek models --filter coder --limit 5
+deepseek models --json > models.json
+```
+- Displays a rich table of available models, mirroring the Gemini/OpenAI/Claude
+  CLIs for quick discovery.
 
 ### Agent mode
 ```bash
@@ -130,6 +173,8 @@ deepseek agent "Refactor the HTTP client" \
 ```
 - The agent uses repository-aware tools: list directories, read/write files,
   apply patches, run shell commands, and search text.
+- Additional integrations now include a Python REPL tool and a lightweight
+  HTTP client for fetching external resources during reasoning.
 - Pass `--global` to permit edits outside the workspace root when you need
   system-wide changes.
 - The agent automatically watches for regressions, replans on the fly, and

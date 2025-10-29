@@ -13,7 +13,10 @@ from .constants import (
     CONFIG_FILE,
     DEFAULT_BASE_URL,
     DEFAULT_CHAT_MODEL,
+    DEFAULT_CHAT_STREAM_STYLE,
     DEFAULT_CHAT_SYSTEM_PROMPT,
+    DEFAULT_COMPLETION_MODEL,
+    DEFAULT_EMBEDDING_MODEL,
     DEFAULT_MODEL,
     DEFAULT_SYSTEM_PROMPT,
 )
@@ -22,14 +25,22 @@ ENV_API_KEY = "DEEPSEEK_API_KEY"
 ENV_BASE_URL = "DEEPSEEK_BASE_URL"
 ENV_MODEL = "DEEPSEEK_MODEL"
 ENV_SYSTEM_PROMPT = "DEEPSEEK_SYSTEM_PROMPT"
+ENV_CHAT_MODEL = "DEEPSEEK_CHAT_MODEL"
+ENV_COMPLETION_MODEL = "DEEPSEEK_COMPLETION_MODEL"
+ENV_EMBEDDING_MODEL = "DEEPSEEK_EMBEDDING_MODEL"
+ENV_CHAT_SYSTEM_PROMPT = "DEEPSEEK_CHAT_SYSTEM_PROMPT"
+ENV_CHAT_STREAM_STYLE = "DEEPSEEK_CHAT_STREAM_STYLE"
 
 _DEFAULTS: Dict[str, Any] = {
     "api_key": None,
     "base_url": DEFAULT_BASE_URL,
     "model": DEFAULT_MODEL,
     "chat_model": DEFAULT_CHAT_MODEL,
+    "completion_model": DEFAULT_COMPLETION_MODEL,
+    "embedding_model": DEFAULT_EMBEDDING_MODEL,
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
     "chat_system_prompt": DEFAULT_CHAT_SYSTEM_PROMPT,
+    "chat_stream_style": DEFAULT_CHAT_STREAM_STYLE,
 }
 
 
@@ -43,6 +54,9 @@ class ResolvedConfig:
     system_prompt: str
     chat_model: str
     chat_system_prompt: str
+    completion_model: str
+    embedding_model: str
+    chat_stream_style: str
 
 
 def ensure_config_dir() -> None:
@@ -108,6 +122,9 @@ def resolve_runtime_config(
     system_prompt: Optional[str] = None,
     chat_model: Optional[str] = None,
     chat_system_prompt: Optional[str] = None,
+    completion_model: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+    chat_stream_style: Optional[str] = None,
 ) -> ResolvedConfig:
     """Resolve runtime config using CLI options, environment variables, and stored config."""
 
@@ -129,9 +146,14 @@ def resolve_runtime_config(
         base_url=base_url or os.environ.get(ENV_BASE_URL) or stored.get("base_url", DEFAULT_BASE_URL),
         model=model or os.environ.get(ENV_MODEL) or stored.get("model", DEFAULT_MODEL),
         system_prompt=system_prompt or os.environ.get(ENV_SYSTEM_PROMPT) or stored.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
-        chat_model=chat_model or stored.get("chat_model", DEFAULT_CHAT_MODEL),
-        chat_system_prompt=chat_system_prompt or stored.get("chat_system_prompt", DEFAULT_CHAT_SYSTEM_PROMPT),
+        chat_model=chat_model or os.environ.get(ENV_CHAT_MODEL) or stored.get("chat_model", DEFAULT_CHAT_MODEL),
+        chat_system_prompt=chat_system_prompt or os.environ.get(ENV_CHAT_SYSTEM_PROMPT) or stored.get("chat_system_prompt", DEFAULT_CHAT_SYSTEM_PROMPT),
+        completion_model=completion_model or os.environ.get(ENV_COMPLETION_MODEL) or stored.get("completion_model", DEFAULT_COMPLETION_MODEL),
+        embedding_model=embedding_model or os.environ.get(ENV_EMBEDDING_MODEL) or stored.get("embedding_model", DEFAULT_EMBEDDING_MODEL),
+        chat_stream_style=(chat_stream_style or os.environ.get(ENV_CHAT_STREAM_STYLE) or stored.get("chat_stream_style", DEFAULT_CHAT_STREAM_STYLE)).lower(),
     )
+    if resolved.chat_stream_style not in {"plain", "markdown", "rich"}:
+        resolved.chat_stream_style = DEFAULT_CHAT_STREAM_STYLE
     return resolved
 
 
@@ -149,6 +171,14 @@ def pretty_config(config: Mapping[str, Any], *, redact: bool = True) -> str:
 __all__ = [
     "ResolvedConfig",
     "ENV_API_KEY",
+    "ENV_BASE_URL",
+    "ENV_MODEL",
+    "ENV_SYSTEM_PROMPT",
+    "ENV_CHAT_MODEL",
+    "ENV_COMPLETION_MODEL",
+    "ENV_EMBEDDING_MODEL",
+    "ENV_CHAT_SYSTEM_PROMPT",
+    "ENV_CHAT_STREAM_STYLE",
     "load_config",
     "save_config",
     "update_config",

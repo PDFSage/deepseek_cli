@@ -8,6 +8,8 @@ APP_NAME = "deepseek-cli"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-reasoner"
 DEFAULT_CHAT_MODEL = DEFAULT_MODEL
+DEFAULT_COMPLETION_MODEL = DEFAULT_MODEL
+DEFAULT_EMBEDDING_MODEL = DEFAULT_MODEL
 DEFAULT_SYSTEM_PROMPT = """
 You are DeepSeek Agent, an autonomous senior software engineer working inside a CLI environment.
 You collaborate with the user to produce well-integrated, production-quality changes. Follow
@@ -30,6 +32,12 @@ these rules:
 Available tools: list_dir, stat_path, read_file, search_text, write_file, apply_patch, run_shell.
 """.strip()
 DEFAULT_CHAT_SYSTEM_PROMPT = "You are DeepSeek Chat, a helpful assistant for developers."
+DEFAULT_COMPLETION_SYSTEM_PROMPT = (
+    "You are DeepSeek Codex, a code completion engine. "
+    "Given surrounding context, return only the code the developer should insert next. "
+    "Do not repeat the provided prefix or suffix, and avoid explanations.\n"
+)
+DEFAULT_CHAT_STREAM_STYLE = "plain"
 DEFAULT_MAX_STEPS = 5000
 AUTO_TEST_FOLLOW_UP = (
     "After implementing changes, run the relevant automated tests (e.g. pytest). If tests fail, "
@@ -49,13 +57,17 @@ TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 # Maximum recursion depth when pretty-printing directory listings in tool results
 MAX_LIST_DEPTH = 4
 
+STREAM_STYLE_CHOICES = ("plain", "markdown", "rich")
+
 __all__ = [
     "APP_NAME",
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
     "DEFAULT_CHAT_MODEL",
+    "DEFAULT_COMPLETION_MODEL",
     "DEFAULT_SYSTEM_PROMPT",
     "DEFAULT_CHAT_SYSTEM_PROMPT",
+    "DEFAULT_COMPLETION_SYSTEM_PROMPT",
     "CONFIG_DIR",
     "CONFIG_FILE",
     "TRANSCRIPTS_DIR",
@@ -64,4 +76,7 @@ __all__ = [
     "AUTO_TEST_FOLLOW_UP",
     "AUTO_BUG_FOLLOW_UP",
     "MAX_TOOL_RESULT_CHARS",
+    "DEFAULT_CHAT_STREAM_STYLE",
+    "DEFAULT_EMBEDDING_MODEL",
+    "STREAM_STYLE_CHOICES",
 ]

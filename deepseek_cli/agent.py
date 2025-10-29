@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -240,6 +242,58 @@ class ToolExecutor:
         lines.append(f"[exit {proc.returncode}]")
         return "\n".join(lines)
 
+    def python_repl(self, code: str, timeout: int = 120) -> ToolResult:
+        if not code.strip():
+            return "Code snippet is empty."
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", code],
+                cwd=self.root,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return f"Python execution timed out after {timeout} seconds."
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+        lines = ["python -c <<'PY'", code, "PY"]
+        if stdout:
+            lines.append(stdout)
+        if stderr:
+            lines.append("[stderr]\n" + stderr)
+        lines.append(f"[exit {proc.returncode}]")
+        return "\n".join(lines)
+
+    def http_request(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
+        timeout: int = 30,
+    ) -> ToolResult:
+        if not url.strip():
+            return "URL must not be empty."
+        request = urllib.request.Request(url, method=method.upper())
+        for key, value in (headers or {}).items():
+            request.add_header(key, value)
+        if body is not None:
+            request.data = body.encode("utf-8")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                content = response.read().decode("utf-8", errors="replace")
+                header_lines = "\n".join(f"{k}: {v}" for k, v in response.headers.items())
+                result_lines = [
+                    f"{request.method} {url} -> {response.status}",
+                    header_lines,
+                    "",
+                    content,
+                ]
+                return "\n".join(line for line in result_lines if line is not None)
+        except urllib.error.URLError as exc:
+            return f"HTTP request failed: {exc}"
+
 
 def _ensure_within_root(root: Path, path: str, allow_global: bool) -> Path:
     return _resolve_path(root, path, allow_global=allow_global)
@@ -368,6 +422,49 @@ def tool_schemas() -> List[Dict[str, Any]]:
                         },
                     },
                     "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "python_repl",
+                "description": "Execute a Python snippet using the system interpreter.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string"},
+                        "timeout": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 600,
+                            "default": 120,
+                        },
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "http_request",
+                "description": "Perform an HTTP request (GET/POST/etc.) and return the response.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "method": {"type": "string", "default": "GET"},
+                        "headers": {"type": "object"},
+                        "body": {"type": "string"},
+                        "timeout": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 120,
+                            "default": 30,
+                        },
+                    },
+                    "required": ["url"],
                 },
             },
         },

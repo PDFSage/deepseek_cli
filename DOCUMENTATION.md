@@ -21,7 +21,8 @@ Configuration values come from three layers, resolved at runtime in the followin
 priority first):
 1. Command line flags such as `--api-key` and `--model`.
 2. Environment variables (`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`,
-   `DEEPSEEK_SYSTEM_PROMPT`).
+   `DEEPSEEK_SYSTEM_PROMPT`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_COMPLETION_MODEL`,
+   `DEEPSEEK_EMBEDDING_MODEL`, `DEEPSEEK_CHAT_STREAM_STYLE`).
 3. The JSON config file at `~/.config/deepseek-cli/config.json`.
 
 `ensure_config_dir()` creates the config directory on demand. `load_config()` merges the persisted JSON
@@ -31,8 +32,11 @@ through `save_config()` and `update_config()`, which both filter unknown keys an
 (default + overrides) payload.
 
 ## CLI Wiring and Command Dispatch (`deepseek_cli/cli.py`)
-`build_parser()` constructs a single `argparse.ArgumentParser` with three subcommands:
+`build_parser()` constructs a single `argparse.ArgumentParser` with six subcommands:
 - `chat`: developer-focused chat sessions (single-turn or interactive).
+- `completions`: Codex-style text/code completions with streaming and file output options.
+- `embeddings`: bulk embedding generation with table/JSON/plain renderers.
+- `models`: convenience wrapper around `client.models.list()` for discovery/automation.
 - `agent`: multi-step agentic workflows with repository-aware tools.
 - `config`: configuration inspection and mutation helpers.
 
@@ -56,13 +60,36 @@ Both chat and agent modes support transcripts. When the user supplies `--transcr
   project files. Each logged message stores the step index along with the raw OpenAI message payload.
 
 ## Chat Workflow (`deepseek_cli/chat.py`)
-`ChatOptions` captures all user-configurable parameters. `run_chat()` builds the initial message set
-(system + user) and calls `client.chat.completions.create`:
-- In streaming mode (`--no-stream` absent), the CLI prints tokens incrementally as they arrive.
+`ChatOptions` captures all user-configurable parameters, including the preferred streaming style.
+`run_chat()` builds the initial message set (system + user) and calls
+`client.chat.completions.create`:
+- In streaming mode (`--no-stream` absent), responses are rendered via
+  `stream_chat_response()` which supports the `plain`, `markdown`, and `rich`
+  presentation modes configured via CLI, environment, or stored config.
 - Otherwise it issues a standard chat completion and prints the full reply.
 
 Interactive chats loop, prompting the user (`You ▸`) until EOF. Non-interactive or single-turn calls exit
 after the first assistant reply. Every turn is optionally logged to the transcript file.
+
+## Completion Workflow (`deepseek_cli/completions.py`)
+`CompletionOptions` mirrors the classic Codex parameters (prompt, suffix, max tokens, stop sequences,
+sampling controls, streaming). `run_completion()` gathers input from a positional prompt, `--input-file`,
+or stdin, then issues `client.completions.create`. Streaming flows through
+`stream_completion_response()` so completions share the same renderer families as chat. Non-streaming
+requests print a Rich table summarising each returned choice. Optional `--output` persistence writes the
+primary completion to disk.
+
+## Embedding Workflow (`deepseek_cli/embeddings.py`)
+`EmbeddingOptions` aggregates positional snippets, optional file inputs, or stdin to build a list of
+texts. `run_embeddings()` calls `client.embeddings.create`, then renders the output as a Rich table
+(previewing the first few vector components), JSON, or a plain numeric dump depending on `--format`.
+When `--output` is supplied, the function persists a JSON payload containing the model name, inputs, and
+vectors for reuse.
+
+## Model Listing (`deepseek_cli/models.py`)
+`ModelListOptions` carries optional filtering, JSON output, and row limits. `list_models()` wraps
+`client.models.list()` and produces a Rich table of IDs, owners, and creation timestamps unless the user
+requests raw JSON for automation pipelines.
 
 ## Agent Workflow Overview (`deepseek_cli/agent.py`)
 ### Input Preparation
@@ -95,6 +122,10 @@ paths against the workspace root unless `allow_global_access` is enabled:
   escaping the workspace.
 - `run_shell(command, timeout=120)`: executes `/bin/bash -lc` inside the workspace and returns stdout,
   stderr, and exit status. Long outputs are truncated to `MAX_TOOL_RESULT_CHARS`.
+- `python_repl(code, timeout=120)`: executes inline Python snippets via the active interpreter and
+  captures stdout/stderr for iterative experimentation.
+- `http_request(url, method="GET", headers=None, body=None, timeout=30)`: performs simple HTTP requests
+  so the agent can retrieve remote references or API payloads during reasoning.
 
 ### Agent Loop
 `agent_loop()` orchestrates the conversation with the API:

@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from openai import OpenAI
+from rich.console import Console
+
+from .streaming import stream_chat_response
 
 
 @dataclass
@@ -24,6 +27,7 @@ class ChatOptions:
     max_tokens: Optional[int]
     interactive: bool
     transcript_path: Optional[Path]
+    stream_style: str
 
 
 def _log_to_transcript(path: Optional[Path], payload: dict) -> None:
@@ -46,6 +50,7 @@ def _collect_user_turn(initial_prompt: Optional[str], interactive: bool) -> Opti
 
 
 def run_chat(client: OpenAI, options: ChatOptions) -> int:
+    console = Console()
     messages: List[dict] = []
     if options.system_prompt:
         messages.append({"role": "system", "content": options.system_prompt})
@@ -71,19 +76,11 @@ def run_chat(client: OpenAI, options: ChatOptions) -> int:
 
         if options.stream:
             stream = client.chat.completions.create(stream=True, **kwargs)
-            pieces: List[str] = []
-            print("Assistant ▸ ", end="", flush=True)
-            for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    pieces.append(delta.content)
-                    print(delta.content, end="", flush=True)
-            print()
-            reply = "".join(pieces)
+            reply = stream_chat_response(stream, style=options.stream_style, console=console)
         else:
             completion = client.chat.completions.create(**kwargs)
             reply = completion.choices[0].message.content or ""
-            print("Assistant ▸ " + reply)
+            console.print(f"Assistant ▸ {reply}")
 
         messages.append({"role": "assistant", "content": reply})
         _log_to_transcript(options.transcript_path, {"role": "assistant", "content": reply})

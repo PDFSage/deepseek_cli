@@ -27,6 +27,7 @@ from openai import OpenAI
 from . import __version__
 from .agent import AgentOptions, agent_loop
 from .chat import ChatOptions, run_chat
+from .completions import CompletionOptions, run_completion
 from .config import (
     ResolvedConfig,
     ensure_config_dir,
@@ -37,7 +38,16 @@ from .config import (
     update_config,
     ENV_API_KEY,
 )
-from .constants import AUTO_BUG_FOLLOW_UP, AUTO_TEST_FOLLOW_UP, CONFIG_FILE, DEFAULT_MAX_STEPS, TRANSCRIPTS_DIR
+from .constants import (
+    AUTO_BUG_FOLLOW_UP,
+    AUTO_TEST_FOLLOW_UP,
+    CONFIG_FILE,
+    DEFAULT_MAX_STEPS,
+    STREAM_STYLE_CHOICES,
+    TRANSCRIPTS_DIR,
+)
+from .embeddings import EmbeddingOptions, run_embeddings
+from .models import ModelListOptions, list_models
 
 COMMAND_PREFIXES = (":", "/", "@")
 MAIN_CONSOLE = Console()
@@ -63,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--max-tokens", type=int, help="Limit the assistant reply tokens")
     chat_parser.add_argument("--no-stream", action="store_true", help="Disable streaming responses")
     chat_parser.add_argument(
+        "--stream-style",
+        choices=STREAM_STYLE_CHOICES,
+        help="Adjust live streaming rendering (default from config).",
+    )
+    chat_parser.add_argument(
         "--interactive",
         action="store_true",
         help="Enter an interactive multi-turn chat session",
@@ -72,6 +87,79 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to save a JSONL transcript (defaults under ~/.config/deepseek-cli)",
     )
     add_shared_connection_options(chat_parser)
+
+    completion_parser = subparsers.add_parser(
+        "completions",
+        help="Request Codex-style text completions.",
+    )
+    completion_parser.add_argument("prompt", nargs="?", help="Prompt text (falls back to stdin)")
+    completion_parser.add_argument(
+        "--input-file",
+        type=Path,
+        help="Read prompt text from a file.",
+    )
+    completion_parser.add_argument("--suffix", help="Optional suffix appended after the insertion point.")
+    completion_parser.add_argument("--model", help="Override completion model.")
+    completion_parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature.")
+    completion_parser.add_argument("--top-p", type=float, default=1.0, help="Nucleus sampling parameter.")
+    completion_parser.add_argument("--max-tokens", type=int, help="Limit completion tokens.")
+    completion_parser.add_argument(
+        "--stop",
+        action="append",
+        default=[],
+        help="Stop sequence (repeat for multiple).",
+    )
+    completion_parser.add_argument("--n", type=int, default=1, help="Number of completions to request (default 1).")
+    completion_parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Disable streaming output (default uses streaming).",
+    )
+    completion_parser.add_argument(
+        "--stream-style",
+        choices=STREAM_STYLE_CHOICES,
+        help="Streaming renderer to use (default from config).",
+    )
+    completion_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional file path to save the primary completion.",
+    )
+    add_shared_connection_options(completion_parser)
+
+    embeddings_parser = subparsers.add_parser(
+        "embeddings",
+        help="Generate embedding vectors for text snippets.",
+    )
+    embeddings_parser.add_argument("text", nargs="*", help="Text snippets to embed (repeatable).")
+    embeddings_parser.add_argument("--input-file", type=Path, help="Read additional inputs from a file.")
+    embeddings_parser.add_argument("--model", help="Override embedding model.")
+    embeddings_parser.add_argument(
+        "--format",
+        choices=("table", "json", "plain"),
+        default="table",
+        help="Render format for embeddings output.",
+    )
+    embeddings_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Write embeddings payload to a JSON file.",
+    )
+    embeddings_parser.add_argument(
+        "--show-dimensions",
+        action="store_true",
+        help="Include vector dimensionality in the table view.",
+    )
+    add_shared_connection_options(embeddings_parser)
+
+    models_parser = subparsers.add_parser(
+        "models",
+        help="List available models from the DeepSeek API.",
+    )
+    models_parser.add_argument("--filter", help="Filter models containing this substring.")
+    models_parser.add_argument("--limit", type=int, help="Limit the number of rows shown.")
+    models_parser.add_argument("--json", action="store_true", help="Output raw JSON instead of a table.")
+    add_shared_connection_options(models_parser)
 
     agent_parser = subparsers.add_parser(
         "agent",
@@ -125,8 +213,11 @@ def build_parser() -> argparse.ArgumentParser:
             "base_url",
             "model",
             "chat_model",
+            "completion_model",
+            "embedding_model",
             "system_prompt",
             "chat_system_prompt",
+            "chat_stream_style",
         ],
     )
     config_set.add_argument("value", help="Configuration value (wrap in quotes for spaces)")
@@ -139,8 +230,11 @@ def build_parser() -> argparse.ArgumentParser:
             "base_url",
             "model",
             "chat_model",
+            "completion_model",
+            "embedding_model",
             "system_prompt",
             "chat_system_prompt",
+            "chat_stream_style",
         ],
     )
 
@@ -348,6 +442,7 @@ def handle_chat(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         system_prompt=args.system or resolved.chat_system_prompt,
         model=args.model or resolved.chat_model,
         stream=not args.no_stream,
+        stream_style=args.stream_style or resolved.chat_stream_style,
         temperature=args.temperature,
         top_p=args.top_p,
         max_tokens=args.max_tokens,
@@ -355,6 +450,48 @@ def handle_chat(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         transcript_path=transcript_path,
     )
     return run_chat(client, options)
+
+
+def handle_completions(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
+    client = create_client(resolved)
+    options = CompletionOptions(
+        prompt=args.prompt,
+        input_file=args.input_file,
+        suffix=args.suffix,
+        model=args.model or resolved.completion_model,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        n=args.n,
+        stop=args.stop or [],
+        stream=not args.no_stream,
+        stream_style=args.stream_style or resolved.chat_stream_style,
+        output_path=args.output,
+    )
+    return run_completion(client, options)
+
+
+def handle_embeddings(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
+    client = create_client(resolved)
+    options = EmbeddingOptions(
+        texts=args.text,
+        input_file=args.input_file,
+        model=args.model or resolved.embedding_model,
+        output_path=args.output,
+        fmt=args.format,
+        show_dimensions=args.show_dimensions,
+    )
+    return run_embeddings(client, options)
+
+
+def handle_models(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
+    client = create_client(resolved)
+    options = ModelListOptions(
+        filter=args.filter,
+        json_output=args.json,
+        limit=args.limit,
+    )
+    return list_models(client, options)
 
 
 def _resolve_transcript_path(value: Optional[str]) -> Optional[Path]:
@@ -737,9 +874,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     config_kwargs = {
         "api_key": getattr(args, "api_key", None),
         "base_url": getattr(args, "base_url", None),
-        "model": getattr(args, "model", None),
-        "system_prompt": getattr(args, "system", None),
     }
+    if args.command == "chat":
+        config_kwargs.update(
+            {
+                "chat_model": getattr(args, "model", None),
+                "chat_system_prompt": getattr(args, "system", None),
+                "chat_stream_style": getattr(args, "stream_style", None),
+            }
+        )
+    elif args.command == "completions":
+        config_kwargs["completion_model"] = getattr(args, "model", None)
+    elif args.command == "embeddings":
+        config_kwargs["embedding_model"] = getattr(args, "model", None)
+    else:
+        config_kwargs.update(
+            {
+                "model": getattr(args, "model", None),
+                "system_prompt": getattr(args, "system", None),
+            }
+        )
     try:
         resolved = resolve_runtime_config(**config_kwargs)
     except RuntimeError as exc:
@@ -778,6 +932,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "chat":
         return handle_chat(args, resolved)
+    if args.command == "completions":
+        return handle_completions(args, resolved)
+    if args.command == "embeddings":
+        return handle_embeddings(args, resolved)
+    if args.command == "models":
+        return handle_models(args, resolved)
     if args.command == "agent":
         return handle_agent(args, resolved)
 
