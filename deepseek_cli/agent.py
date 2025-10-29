@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from rich.console import Console
+
 from openai import OpenAI
 
 from .constants import MAX_LIST_DEPTH, MAX_TOOL_RESULT_CHARS
@@ -398,6 +400,12 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
         options.follow_up,
     )
     specs = tool_schemas()
+    thought_console = Console(stderr=True, highlight=False)
+
+    def thought(message: str, *, style: str = "bright_blue") -> None:
+        if not options.verbose:
+            return
+        thought_console.print(f"[bold bright_blue]▌[/] [{style}]{message}[/{style}]")
 
     transcript_path = options.transcript_path
     executor = ToolExecutor(
@@ -422,14 +430,12 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
 
     for step in range(1, options.max_steps + 1):
         if options.verbose:
-            print(f"\n[agent] Requesting model step {step}…", file=sys.stderr)
+            thought_console.print()
             last_message = messages[-1]
-            print(
-                "[state] Last message type:",
-                last_message.get("role"),
-                "| tokens:",
-                len(str(last_message.get("content", ""))),
-                file=sys.stderr,
+            thought(f"Step {step}: requesting model reasoning…")
+            thought(
+                f"Last message {last_message.get('role')} · {len(str(last_message.get('content', '')))} characters",
+                style="dim",
             )
         response = client.chat.completions.create(
             model=options.model,
@@ -464,14 +470,8 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                 except json.JSONDecodeError as exc:
                     result = f"Failed to decode arguments for {name}: {exc}"
                 else:
-                    if options.verbose:
-                        print(
-                            f"[tool] {name}({arguments})", file=sys.stderr
-                        )
-                        print(
-                            f"[plan] Executing {name} to advance step {step}…",
-                            file=sys.stderr,
-                        )
+                    thought(f"Tool request: {name}({arguments})", style="magenta")
+                    thought(f"Executing {name} to advance step {step}…", style="dim")
                     try:
                         result = execute_tool(executor, name, arguments)
                     except Exception as exc:  # pragma: no cover
@@ -491,14 +491,15 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                 }
                 messages.append(tool_message)
                 log_to_transcript(tool_message, step_index=step)
+                if isinstance(result, str):
+                    thought(f"{name} completed · {len(result)} characters captured.", style="dim")
         else:
             content = message.content or ""
             assistant_message = {"role": "assistant", "content": content}
             messages.append(assistant_message)
             log_to_transcript(assistant_message, step_index=step)
             print(content)
-            if options.verbose:
-                print("[plan] Assistant produced final answer; ending loop.", file=sys.stderr)
+            thought("Assistant produced final answer; ending loop.", style="green")
             return
     if transcript_path:
         try:
@@ -515,8 +516,7 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
             "Re-run with a higher --max-steps or provide --transcript to inspect the conversation."
         )
     print(message, file=sys.stderr)
-    if options.verbose:
-        print("[plan] Reached maximum steps without completion.", file=sys.stderr)
+    thought("Reached maximum steps without completion.", style="red")
 
 
 __all__ = [

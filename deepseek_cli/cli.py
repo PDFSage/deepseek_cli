@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 import textwrap
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from packaging.version import Version
+
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.table import Table
+from rich.text import Text
 
 from openai import OpenAI
 
@@ -27,8 +35,12 @@ from .config import (
     resolve_runtime_config,
     save_config,
     update_config,
+    ENV_API_KEY,
 )
 from .constants import AUTO_BUG_FOLLOW_UP, AUTO_TEST_FOLLOW_UP, CONFIG_FILE, DEFAULT_MAX_STEPS, TRANSCRIPTS_DIR
+
+COMMAND_PREFIXES = (":", "/", "@")
+MAIN_CONSOLE = Console()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -204,6 +216,130 @@ class InteractiveSessionState:
         self.default_transcript_path = self.transcript_path
 
 
+def _mask_api_key(value: Optional[str]) -> str:
+    if not value:
+        return "not set"
+    if len(value) <= 8:
+        return value[:2] + "…" + value[-2:]
+    return value[:4] + "…" + value[-4:]
+
+
+def _set_runtime_api_key(value: Optional[str]) -> None:
+    if value:
+        os.environ[ENV_API_KEY] = value
+    else:
+        os.environ.pop(ENV_API_KEY, None)
+
+
+def _store_api_key(value: Optional[str]) -> bool:
+    config = load_config()
+    config["api_key"] = value
+    try:
+        save_config(config)
+    except RuntimeError as exc:
+        MAIN_CONSOLE.print(f"[red]Unable to persist API key:[/] {exc}")
+        return False
+    _set_runtime_api_key(value)
+    if value:
+        MAIN_CONSOLE.print(f"[green]Saved API key ({_mask_api_key(value)}) to config.[/]")
+    else:
+        MAIN_CONSOLE.print("[yellow]Cleared stored API key.[/]")
+    return True
+
+
+def _prompt_for_api_key(
+    *,
+    allow_empty: bool = False,
+    prompt_text: str = "Enter DeepSeek API key",
+) -> Optional[str]:
+    try:
+        entered = Prompt.ask(
+            f"[bold yellow]{prompt_text}[/]",
+            console=MAIN_CONSOLE,
+            password=True,
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        MAIN_CONSOLE.print("[red]API key entry cancelled by user.[/]")
+        return None
+    if not entered and not allow_empty:
+        MAIN_CONSOLE.print("[red]No API key entered.[/]")
+        return None
+    return entered or None
+
+
+def _command_reference_table() -> Table:
+    table = Table(
+        title="Interactive Commands",
+        box=box.ROUNDED,
+        title_style="bold magenta",
+        show_header=False,
+        pad_edge=True,
+    )
+    table.add_column("Command", style="bold cyan", no_wrap=True)
+    table.add_column("Description", style="white")
+    rows = [
+        ("@help /help :help", "Show this command palette"),
+        ("@quit /quit :quit", "Exit the interactive shell"),
+        ("@workspace [PATH]", "Show or change the active workspace"),
+        ("@model [NAME]", "Display or update the active model"),
+        ("@system [TEXT]", "Show or set the system prompt"),
+        ("@max-steps [N]", "Display or update max reasoning steps"),
+        ("@read-only [on|off|toggle]", "Toggle workspace write access"),
+        ("@global [on|off|toggle]", "Allow edits outside the workspace root"),
+        ("@transcript [PATH]", "Log transcripts to a file"),
+        ("@clear-transcript", "Disable transcript logging"),
+        ("@settings", "Display current session status"),
+        ("@reset", "Restore defaults from config"),
+        ("@api", "Update the stored DeepSeek API key"),
+        ("@verbose", "Enable detailed thought process logging"),
+        ("@quiet", "Disable detailed thought process logging"),
+    ]
+    for command, description in rows:
+        table.add_row(command, description)
+    return table
+
+
+def _session_status_panel(state: InteractiveSessionState) -> Panel:
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style="bold cyan", justify="right")
+    grid.add_column(style="white")
+    grid.add_row("Workspace", str(state.workspace))
+    grid.add_row("Model", state.model)
+    grid.add_row(
+        "System",
+        "custom prompt" if state.system_prompt != state.default_system_prompt else "default prompt",
+    )
+    grid.add_row("Read-only", "on" if state.read_only else "off")
+    grid.add_row("Max steps", str(state.max_steps))
+    grid.add_row("Global ops", "on" if state.allow_global_access else "off")
+    grid.add_row("Verbose", "on" if state.verbose else "off")
+    grid.add_row(
+        "Transcript",
+        str(state.transcript_path) if state.transcript_path else "disabled",
+    )
+    return Panel(
+        grid,
+        title="Session Status",
+        border_style="bright_blue",
+        expand=False,
+    )
+
+
+def _print_interactive_help() -> None:
+    MAIN_CONSOLE.print(_command_reference_table())
+    MAIN_CONSOLE.print(
+        Panel(
+            Text(
+                "Enter your request at the prompt. Use a trailing '\\' to extend across lines.\n"
+                "Commands can start with @, /, or :.\n"
+                "Press Enter on an empty line to send the prompt together with automated test and bug checks.",
+                style="bright_white",
+            ),
+            border_style="bright_magenta",
+        )
+    )
+
+
 def handle_chat(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
     client = create_client(resolved)
     transcript_path = _resolve_transcript_path(args.transcript)
@@ -232,49 +368,11 @@ def _resolve_transcript_path(value: Optional[str]) -> Optional[Path]:
     return TRANSCRIPTS_DIR / candidate
 
 
-def _format_session_status(state: InteractiveSessionState) -> str:
-    lines = [
-        f"Workspace : {state.workspace}",
-        f"Model     : {state.model}",
-        f"System    : {('custom' if state.system_prompt != state.default_system_prompt else 'default')} prompt",
-        f"Read-only : {'on' if state.read_only else 'off'}",
-        f"Max steps : {state.max_steps}",
-        f"Global ops: {'on' if state.allow_global_access else 'off'}",
-        f"Verbose   : {'on' if state.verbose else 'off'}",
-    ]
-    if state.transcript_path:
-        lines.append(f"Transcript: {state.transcript_path}")
-    return "\n".join(lines)
-
-
-def _print_interactive_help() -> None:
-    help_text = textwrap.dedent(
-        """
-        Commands:
-          :help or :?           Show this help message
-          :quit or :exit        Leave the interactive agent
-          :workspace [PATH]     Show or change the active workspace directory
-          :model [NAME]         Show or change the model
-          :system [TEXT]        Show or replace the system prompt
-          :max-steps [N]        Show or change the max reasoning steps
-          :read-only [on|off]   Toggle write access to the workspace
-          :verbose / :quiet     Enable or disable tool logging
-          :global [on|off]      Allow editing outside the workspace root
-          :transcript [PATH]    Write transcripts to PATH (relative to workspace)
-          :clear-transcript     Stop writing transcripts
-          :settings             Display the current session settings
-          :reset                Restore defaults from your configuration
-
-        Enter your request at the prompt. After a prompt you can add optional
-        follow-ups; press Enter on an empty line to run the agent.
-        """
-    ).strip()
-    print(help_text)
-
-
 def _handle_interactive_command(
     raw: str,
     state: InteractiveSessionState,
+    *,
+    on_api_command: Optional[Callable[[List[str]], None]] = None,
 ) -> bool:
     command_line = raw[1:].strip()
     if not command_line:
@@ -283,7 +381,7 @@ def _handle_interactive_command(
     try:
         parts = shlex.split(command_line)
     except ValueError as exc:
-        print(f"Unable to parse command: {exc}", file=sys.stderr)
+        MAIN_CONSOLE.print(f"[red]Unable to parse command:[/] {exc}")
         return True
     if not parts:
         return True
@@ -291,17 +389,17 @@ def _handle_interactive_command(
     args = parts[1:]
 
     if name in {"quit", "exit", "q"}:
-        print("Exiting interactive agent.")
+        MAIN_CONSOLE.print("[bold magenta]Goodbye![/] Exiting interactive agent.")
         return False
     if name in {"help", "?"}:
         _print_interactive_help()
         return True
     if name in {"settings", "status"}:
-        print(_format_session_status(state))
+        MAIN_CONSOLE.print(_session_status_panel(state))
         return True
     if name == "workspace":
         if not args:
-            print(f"Workspace: {state.workspace}")
+            MAIN_CONSOLE.print(f"[cyan]Workspace:[/] {state.workspace}")
             return True
         raw_path = " ".join(args)
         candidate = Path(raw_path).expanduser()
@@ -310,46 +408,46 @@ def _handle_interactive_command(
         try:
             candidate = candidate.resolve()
         except FileNotFoundError:
-            print(f"Workspace '{candidate}' does not exist.", file=sys.stderr)
+            MAIN_CONSOLE.print(f"[red]Workspace '{candidate}' does not exist.[/]")
             return True
         if not candidate.exists() or not candidate.is_dir():
-            print(f"Workspace '{candidate}' is not a directory.", file=sys.stderr)
+            MAIN_CONSOLE.print(f"[red]Workspace '{candidate}' is not a directory.[/]")
             return True
         state.workspace = candidate
-        print(f"Workspace set to {state.workspace}")
+        MAIN_CONSOLE.print(f"[green]Workspace set to[/] {state.workspace}")
         return True
     if name == "model":
         if not args:
-            print(f"Model: {state.model}")
+            MAIN_CONSOLE.print(f"[cyan]Model:[/] {state.model}")
             return True
         state.model = " ".join(args)
-        print(f"Model set to {state.model}")
+        MAIN_CONSOLE.print(f"[green]Model set to[/] {state.model}")
         return True
     if name == "system":
         if not args:
-            print(state.system_prompt)
+            MAIN_CONSOLE.print(Panel(state.system_prompt or "(empty)", title="System Prompt"))
             return True
         state.system_prompt = " ".join(args)
-        print("System prompt updated.")
+        MAIN_CONSOLE.print("[green]System prompt updated.[/]")
         return True
     if name == "max-steps":
         if not args:
-            print(f"Max steps: {state.max_steps}")
+            MAIN_CONSOLE.print(f"[cyan]Max steps:[/] {state.max_steps}")
             return True
         try:
             value = int(args[0])
         except ValueError:
-            print("max-steps requires an integer value.", file=sys.stderr)
+            MAIN_CONSOLE.print("[red]max-steps requires an integer value.[/]")
             return True
         if value < 1:
-            print("max-steps must be at least 1.", file=sys.stderr)
+            MAIN_CONSOLE.print("[red]max-steps must be at least 1.[/]")
             return True
         state.max_steps = value
-        print(f"Max steps set to {value}")
+        MAIN_CONSOLE.print(f"[green]Max steps set to[/] {value}")
         return True
     if name == "read-only":
         if not args:
-            print(f"Read-only: {'on' if state.read_only else 'off'}")
+            MAIN_CONSOLE.print(f"[cyan]Read-only:[/] {'on' if state.read_only else 'off'}")
             return True
         setting = args[0].lower()
         if setting in {"on", "true", "1"}:
@@ -359,13 +457,13 @@ def _handle_interactive_command(
         elif setting == "toggle":
             state.read_only = not state.read_only
         else:
-            print("Use on/off/toggle to control read-only mode.", file=sys.stderr)
+            MAIN_CONSOLE.print("[red]Use on/off/toggle to control read-only mode.[/]")
             return True
-        print(f"Read-only mode {'enabled' if state.read_only else 'disabled'}.")
+        MAIN_CONSOLE.print(f"[green]Read-only mode {'enabled' if state.read_only else 'disabled'}.[/]")
         return True
     if name == "global":
         if not args:
-            print(f"Global operations: {'on' if state.allow_global_access else 'off'}")
+            MAIN_CONSOLE.print(f"[cyan]Global operations:[/] {'on' if state.allow_global_access else 'off'}")
             return True
         setting = args[0].lower()
         if setting in {"on", "true", "1"}:
@@ -375,36 +473,36 @@ def _handle_interactive_command(
         elif setting == "toggle":
             state.allow_global_access = not state.allow_global_access
         else:
-            print("Use on/off/toggle to control global operations.", file=sys.stderr)
+            MAIN_CONSOLE.print("[red]Use on/off/toggle to control global operations.[/]")
             return True
         message = "enabled (paths may escape workspace)" if state.allow_global_access else "disabled"
-        print(f"Global operations {message}.")
+        MAIN_CONSOLE.print(f"[green]Global operations {message}.[/]")
         return True
     if name == "verbose":
         state.verbose = True
-        print("Verbose tool logging enabled.")
+        MAIN_CONSOLE.print("[green]Verbose tool logging enabled.[/]")
         return True
     if name == "quiet":
         state.verbose = False
-        print("Verbose tool logging disabled.")
+        MAIN_CONSOLE.print("[yellow]Verbose tool logging disabled.[/]")
         return True
     if name == "transcript":
         if not args:
             if state.transcript_path:
-                print(f"Transcript logging to {state.transcript_path}")
+                MAIN_CONSOLE.print(f"[cyan]Transcript logging to[/] {state.transcript_path}")
             else:
-                print("Transcript logging is disabled.")
+                MAIN_CONSOLE.print("[yellow]Transcript logging is disabled.[/]")
             return True
         raw_path = " ".join(args)
         candidate = Path(raw_path).expanduser()
         if not candidate.is_absolute():
             candidate = (state.workspace / raw_path).expanduser()
         state.transcript_path = candidate
-        print(f"Transcript logging set to {state.transcript_path}")
+        MAIN_CONSOLE.print(f"[green]Transcript logging set to[/] {state.transcript_path}")
         return True
     if name == "clear-transcript":
         state.transcript_path = None
-        print("Transcript logging disabled.")
+        MAIN_CONSOLE.print("[yellow]Transcript logging disabled.[/]")
         return True
     if name == "reset":
         state.workspace = state.default_workspace
@@ -415,11 +513,14 @@ def _handle_interactive_command(
         state.allow_global_access = state.default_allow_global_access
         state.verbose = state.default_verbose
         state.transcript_path = state.default_transcript_path
-        print("Session settings reset to defaults.")
-        print(_format_session_status(state))
+        MAIN_CONSOLE.print("[green]Session settings reset to defaults.[/]")
+        MAIN_CONSOLE.print(_session_status_panel(state))
         return True
-
-    print(f"Unknown command '{name}'. Type :help for options.", file=sys.stderr)
+    if name == "api":
+        if on_api_command:
+            on_api_command(args)
+        return True
+    MAIN_CONSOLE.print(f"[red]Unknown command '{name}'. Type /help for options.[/]")
     return True
 
 
@@ -436,9 +537,8 @@ def _run_interactive_agent_prompt(
 ) -> None:
     workspace = state.workspace
     if not workspace.exists():
-        print(
-            f"Workspace '{workspace}' does not exist. Use :workspace to choose another.",
-            file=sys.stderr,
+        MAIN_CONSOLE.print(
+            f"[red]Workspace '{workspace}' does not exist.[/] Use /workspace to choose another."
         )
         return
     options = AgentOptions(
@@ -456,41 +556,69 @@ def _run_interactive_agent_prompt(
     try:
         agent_loop(client, options)
     except Exception as exc:  # pragma: no cover
-        print(f"Agent error: {exc}", file=sys.stderr)
+        MAIN_CONSOLE.print(f"[red]Agent error:[/] {exc}")
 
 
 def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
-    client = create_client(resolved)
+    current_config = resolved
+    client = create_client(current_config)
     state = InteractiveSessionState(
         workspace=Path.cwd().resolve(),
-        model=resolved.model,
-        system_prompt=resolved.system_prompt,
+        model=current_config.model,
+        system_prompt=current_config.system_prompt,
     )
 
-    print("Initializing DeepSeek agent…", file=sys.stderr)
-    banner = textwrap.dedent(
-        """
-        DeepSeek Agent • Interactive coding workspace
-        Commands start with ':'. Type :help for assistance, :quit to exit.
-        """
-    ).strip()
-    print(banner)
-    print(_format_session_status(state))
+    MAIN_CONSOLE.print(
+        Panel(
+            Text(
+                "DeepSeek Agent\nInteractive coding workspace",
+                justify="center",
+                style="bold bright_cyan",
+            ),
+            subtitle="Try /help for the command palette",
+            border_style="bright_magenta",
+            padding=(1, 2),
+        )
+    )
+    MAIN_CONSOLE.print(f"[cyan]API key:[/] {_mask_api_key(current_config.api_key)}")
+    MAIN_CONSOLE.print(_session_status_panel(state))
+    _print_interactive_help()
+
+    def handle_api_command(args: List[str]) -> None:
+        nonlocal client
+        MAIN_CONSOLE.print(f"[cyan]Current API key:[/] {_mask_api_key(current_config.api_key)}")
+        if args and args[0].lower() == "show":
+            return
+        new_key = _prompt_for_api_key(
+            allow_empty=True,
+            prompt_text="Enter new DeepSeek API key (leave blank to cancel)",
+        )
+        if not new_key:
+            MAIN_CONSOLE.print("[yellow]API key unchanged.[/]")
+            return
+        if _store_api_key(new_key):
+            current_config.api_key = new_key
+            client = create_client(current_config)
+            MAIN_CONSOLE.print("[green]API key updated and reloaded for this session.[/]")
 
     while True:
         try:
-            raw = input("Prompt › ")
+            raw = MAIN_CONSOLE.input("[bold bright_cyan]Prompt ▸ [/]")
         except EOFError:
-            print()
+            MAIN_CONSOLE.line()
             return 0
         except KeyboardInterrupt:
-            print()
+            MAIN_CONSOLE.line()
             return 130
         prompt = raw.strip()
         if not prompt:
             continue
-        if prompt.startswith(":"):
-            should_continue = _handle_interactive_command(prompt, state)
+        if prompt[0] in COMMAND_PREFIXES:
+            should_continue = _handle_interactive_command(
+                prompt,
+                state,
+                on_api_command=handle_api_command,
+            )
             if not should_continue:
                 return 0
             continue
@@ -499,12 +627,12 @@ def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
         while prompt_lines[-1].endswith("\\"):
             prompt_lines[-1] = prompt_lines[-1].rstrip("\\")
             try:
-                continuation = input("… ")
+                continuation = MAIN_CONSOLE.input("[bold bright_cyan]… [/]")
             except EOFError:
-                print()
+                MAIN_CONSOLE.line()
                 break
             except KeyboardInterrupt:
-                print()
+                MAIN_CONSOLE.line()
                 break
             prompt_lines.append(continuation.rstrip())
         final_prompt = "\n".join(line.strip() for line in prompt_lines if line.strip())
@@ -599,21 +727,51 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(__version__)
         return 0
 
+    MAIN_CONSOLE.print(f"[cyan]deepseek-agent v{__version__}[/]")
+
     notify_if_update_available()
 
     if args.command == "config":
         return handle_config(args)
 
+    config_kwargs = {
+        "api_key": getattr(args, "api_key", None),
+        "base_url": getattr(args, "base_url", None),
+        "model": getattr(args, "model", None),
+        "system_prompt": getattr(args, "system", None),
+    }
     try:
-        resolved = resolve_runtime_config(
-            api_key=getattr(args, "api_key", None),
-            base_url=getattr(args, "base_url", None),
-            model=getattr(args, "model", None),
-            system_prompt=getattr(args, "system", None),
-        )
+        resolved = resolve_runtime_config(**config_kwargs)
     except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+        missing_api_key = "No DeepSeek API key found" in str(exc)
+        if args.command is None and missing_api_key:
+            MAIN_CONSOLE.print(
+                Panel(
+                    Text(
+                        "A DeepSeek API key is required before the interactive shell can start.\n"
+                        "Create one at https://platform.deepseek.com/api_keys and paste it below.",
+                        justify="center",
+                        style="bright_white",
+                    ),
+                    title="API key required",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
+            api_key = _prompt_for_api_key(prompt_text="Enter DeepSeek API key to continue")
+            if not api_key:
+                return 1
+            if not _store_api_key(api_key):
+                return 1
+            config_kwargs["api_key"] = api_key
+            try:
+                resolved = resolve_runtime_config(**config_kwargs)
+            except RuntimeError as inner_exc:  # pragma: no cover
+                MAIN_CONSOLE.print(f"[red]{inner_exc}[/]")
+                return 1
+        else:
+            print(str(exc), file=sys.stderr)
+            return 1
 
     if args.command is None:
         return run_interactive_agent_shell(resolved)

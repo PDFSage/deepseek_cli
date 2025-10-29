@@ -15,6 +15,9 @@ repository-aware tooling, plus configuration helpers and transcript logging.
   conversations with streaming output and transcript capture.
 - Config mode (`deepseek config`) manages stored defaults while respecting
   environment variable overrides.
+- Interactive mode now launches a colourful Rich-powered shell that surfaces
+  `/` and `@` command shortcuts, streams the agent's thought process, and lets
+  you update the stored API key without leaving the session.
 - Ships as a Python package with an executable entry point and Homebrew formula
   for distribution flexibility.
 
@@ -39,9 +42,9 @@ Install the latest commit directly from GitHub:
 ```bash
 python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@main"
 ```
-Specify a tag (for example `v0.1.11`) to pin a release:
+Specify a tag (for example `v0.2.0`) to pin a release:
 ```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.1.11"
+python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.2.0"
 ```
 
 ### From a local clone
@@ -79,23 +82,22 @@ If the config directory is unwritable, fall back to environment variables.
 
 ### Interactive agent (default)
 Running `deepseek` with no arguments launches the interactive coding agent,
-similar to Claude Code or the Gemini CLI. The shell waits for the agent to
-initialise, then prompts for your request. Commands starting with `:` adjust the
-session (for example `:workspace`, `:model`, `:read-only`, `:transcript`, and
-`:help`). Exit with `:quit` or `Ctrl+C`. Each request now runs immediately—include
-any follow-up guidance in your initial prompt. The assistant
-also appends an internal instruction to run automated tests and continue
-iterating until they pass (or a clear justification is recorded).
-Use `:global on` if you want the agent to edit files outside the current
-workspace root (highly privileged; defaults to off). The agent continually
-revises its plan when new information appears, hunts for regressions introduced
-by recent changes, and keeps iterating until both tests and bug checks are
-clean.
-Tool outputs are automatically truncated to stay within the model's context
-window—ask for narrower queries or targeted reads if you need more detail.
+now presented through a colourful Rich-powered shell. A command palette is
+displayed on start so you can see the available `/`, `@`, or `:` shortcuts at a
+glance (for example `@workspace`, `@model`, `@read-only`, `@transcript`,
+`@help`, and `@api`). Exit with `@quit` or `Ctrl+C`. Each request runs as soon
+as you press Enter—include follow-up guidance in your initial prompt. The
+assistant appends internal follow-ups that run automated tests and regression
+checks until they succeed or a clear justification is provided.
+Use `@global on` when you need to edit files outside the active workspace.
+During execution the shell streams the agent's thought process prefixed with
+`▌`, so you can follow what tools are being invoked in real time. Tool outputs
+are still truncated if they exceed the configured limits; narrow the scope or
+request additional reads for more detail.
 
-If no API key is configured, the CLI exits with instructions to create one at
-https://platform.deepseek.com/api_keys.
+If no API key is detected, the CLI now prompts you to paste one on launch and
+safely stores it. You can update the stored key at any time with `@api` or via
+`deepseek config set api_key`.
 
 ### Verify installation
 ```bash

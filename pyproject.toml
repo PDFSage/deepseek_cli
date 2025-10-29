@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepseek_agent"
-version = "0.1.11"
+version = "0.2.1"
 description = "Developer-focused DeepSeek command line tools"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -15,6 +15,7 @@ license = "MIT"
 dependencies = [
   "openai>=1.13.3",
   "packaging>=24.0",
+  "rich>=13.7.0",
 ]
 
 [project.urls]
