@@ -11,6 +11,8 @@ repository-aware tooling, plus configuration helpers and transcript logging.
 ## Features
 - Agent mode (`deepseek agent`) orchestrates tool-aware coding sessions with the
   DeepSeek API, optional read-only mode, transcripts, and workspace controls.
+- Auto-detects likely project test commands and reminds the agent to run them,
+  keeping changes validated against the repo's real workflows.
 - Chat mode (`deepseek chat`) supports single-response or interactive
   conversations with streaming output and transcript capture.
 - Completions mode (`deepseek completions`) mirrors Codex-style code/text

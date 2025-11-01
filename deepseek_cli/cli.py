@@ -48,6 +48,7 @@ from .constants import (
 )
 from .embeddings import EmbeddingOptions, run_embeddings
 from .models import ModelListOptions, list_models
+from .testing import build_test_followups
 
 COMMAND_PREFIXES = (":", "/", "@")
 MAIN_CONSOLE = Console()
@@ -774,6 +775,7 @@ def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
             prompt_lines.append(continuation.rstrip())
         final_prompt = "\n".join(line.strip() for line in prompt_lines if line.strip())
         follow_ups = _collect_follow_ups()
+        follow_ups.extend(build_test_followups(state.workspace))
         follow_ups.extend([AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP])
         if not final_prompt:
             continue
@@ -798,7 +800,9 @@ def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         model=args.model or resolved.model,
         system_prompt=args.system or resolved.system_prompt,
         user_prompt=args.prompt,
-        follow_up=(args.follow_up or []) + [AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP],
+        follow_up=(args.follow_up or [])
+        + build_test_followups(workspace)
+        + [AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP],
         workspace=workspace,
         read_only=args.read_only,
         allow_global_access=getattr(args, "allow_global", False),

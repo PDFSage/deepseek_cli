@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -21,6 +23,12 @@ from openai import OpenAI
 from .constants import MAX_LIST_DEPTH, MAX_TOOL_RESULT_CHARS
 
 ToolResult = str
+
+
+def _default_file_mode() -> int:
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
 
 
 @dataclass
@@ -93,7 +101,36 @@ class ToolExecutor:
                 f"Cannot write '{path}': parent directory does not exist. "
                 "Pass create_parents=true to create it."
             )
-        target.write_text(content, encoding=self.encoding)
+        existing_mode: Optional[int] = None
+        if target.exists():
+            try:
+                existing_mode = stat.S_IMODE(target.stat().st_mode)
+            except OSError:
+                existing_mode = None
+        fd = None
+        tmp_path: Optional[Path] = None
+        try:
+            fd, tmp_name = tempfile.mkstemp(dir=str(target.parent))
+            tmp_path = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding=self.encoding) as handle:
+                fd = None
+                handle.write(content)
+            desired_mode = existing_mode if existing_mode is not None else _default_file_mode()
+            try:
+                os.chmod(tmp_path, desired_mode)
+            except OSError:
+                # Ignore chmod errors; proceed with replacement
+                pass
+            tmp_path.replace(target)
+        except Exception as exc:
+            if fd is not None:
+                os.close(fd)
+            if tmp_path and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            return f"Failed to write '{path}': {exc}"
         return f"Wrote {len(content)} characters to '{path}'."
 
     def stat_path(self, path: str = ".") -> ToolResult:

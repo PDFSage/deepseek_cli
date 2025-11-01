@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
-__all__ = ["__version__"]
+from . import testing as testing
 
-__version__ = "0.3.0"
+__all__ = ["__version__", "testing"]
+
+__version__ = "0.4.0"
