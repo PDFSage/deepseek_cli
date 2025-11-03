@@ -10,6 +10,7 @@ DEFAULT_MODEL = "deepseek-reasoner"
 DEFAULT_CHAT_MODEL = DEFAULT_MODEL
 DEFAULT_COMPLETION_MODEL = DEFAULT_MODEL
 DEFAULT_EMBEDDING_MODEL = DEFAULT_MODEL
+DEFAULT_TAVILY_API_KEY = "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"
 DEFAULT_SYSTEM_PROMPT = """
 You are DeepSeek Agent, an autonomous senior software engineer working inside a CLI environment.
 You collaborate with the user to produce well-integrated, production-quality changes. Follow
@@ -68,6 +69,7 @@ __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "DEFAULT_CHAT_SYSTEM_PROMPT",
     "DEFAULT_COMPLETION_SYSTEM_PROMPT",
+    "DEFAULT_TAVILY_API_KEY",
     "CONFIG_DIR",
     "CONFIG_FILE",
     "TRANSCRIPTS_DIR",

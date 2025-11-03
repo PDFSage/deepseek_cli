@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
 from packaging.version import Version
 
 from rich import box
@@ -37,11 +43,13 @@ from .config import (
     save_config,
     update_config,
     ENV_API_KEY,
+    ENV_TAVILY_API_KEY,
 )
 from .constants import (
     AUTO_BUG_FOLLOW_UP,
     AUTO_TEST_FOLLOW_UP,
     CONFIG_FILE,
+    DEFAULT_TAVILY_API_KEY,
     DEFAULT_MAX_STEPS,
     STREAM_STYLE_CHOICES,
     TRANSCRIPTS_DIR,
@@ -52,153 +60,93 @@ from .testing import build_test_followups
 
 COMMAND_PREFIXES = (":", "/", "@")
 MAIN_CONSOLE = Console()
+PROMPT_STYLE = Style.from_dict({"prompt": "ansibrightcyan bold"})
+PROMPT_MESSAGE = FormattedText([("class:prompt", "Prompt ▸ ")])
+PROMPT_CONTINUATION = FormattedText([("class:prompt", "… ")])
+
+
+def _prompt_continuation(width: int, line_number: int, is_soft_wrap: bool) -> FormattedText:
+    return PROMPT_CONTINUATION
+
+
+def _build_prompt_session() -> PromptSession:
+    """Create a prompt session that supports multiline editing and history."""
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def _(event) -> None:
+        buffer = event.app.current_buffer
+        event.app.exit(result=buffer.text)
+
+    @bindings.add("s-enter")
+    @bindings.add("c-enter")
+    @bindings.add("escape", "enter")
+    def _(event) -> None:
+        event.app.current_buffer.insert_text("\n")
+
+    return PromptSession(
+        history=InMemoryHistory(),
+        key_bindings=bindings,
+        multiline=True,
+        prompt_continuation=_prompt_continuation,
+        style=PROMPT_STYLE,
+        reserve_space_for_menu=0,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deepseek",
-        description="DeepSeek command line interface for coding and chat workflows.",
+        description="DeepSeek command line interface for unified agent workflows.",
     )
     parser.add_argument("--version", action="store_true", help="Show version and exit")
-
-    subparsers = parser.add_subparsers(dest="command")
-
-    chat_parser = subparsers.add_parser(
-        "chat", help="Chat with DeepSeek in a developer-friendly shell",
+    parser.add_argument(
+        "--prompt",
+        help="Run a single agent instruction and exit (omit to launch the interactive shell).",
     )
-    chat_parser.add_argument("prompt", nargs="?", help="Initial user prompt")
-    chat_parser.add_argument("--model", help="Override chat model")
-    chat_parser.add_argument("--system", help="Override system prompt")
-    chat_parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature")
-    chat_parser.add_argument("--top-p", type=float, default=1.0, help="Nucleus sampling parameter")
-    chat_parser.add_argument("--max-tokens", type=int, help="Limit the assistant reply tokens")
-    chat_parser.add_argument("--no-stream", action="store_true", help="Disable streaming responses")
-    chat_parser.add_argument(
-        "--stream-style",
-        choices=STREAM_STYLE_CHOICES,
-        help="Adjust live streaming rendering (default from config).",
-    )
-    chat_parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Enter an interactive multi-turn chat session",
-    )
-    chat_parser.add_argument(
-        "--transcript",
-        help="Path to save a JSONL transcript (defaults under ~/.config/deepseek-cli)",
-    )
-    add_shared_connection_options(chat_parser)
-
-    completion_parser = subparsers.add_parser(
-        "completions",
-        help="Request Codex-style text completions.",
-    )
-    completion_parser.add_argument("prompt", nargs="?", help="Prompt text (falls back to stdin)")
-    completion_parser.add_argument(
-        "--input-file",
-        type=Path,
-        help="Read prompt text from a file.",
-    )
-    completion_parser.add_argument("--suffix", help="Optional suffix appended after the insertion point.")
-    completion_parser.add_argument("--model", help="Override completion model.")
-    completion_parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature.")
-    completion_parser.add_argument("--top-p", type=float, default=1.0, help="Nucleus sampling parameter.")
-    completion_parser.add_argument("--max-tokens", type=int, help="Limit completion tokens.")
-    completion_parser.add_argument(
-        "--stop",
-        action="append",
-        default=[],
-        help="Stop sequence (repeat for multiple).",
-    )
-    completion_parser.add_argument("--n", type=int, default=1, help="Number of completions to request (default 1).")
-    completion_parser.add_argument(
-        "--no-stream",
-        action="store_true",
-        help="Disable streaming output (default uses streaming).",
-    )
-    completion_parser.add_argument(
-        "--stream-style",
-        choices=STREAM_STYLE_CHOICES,
-        help="Streaming renderer to use (default from config).",
-    )
-    completion_parser.add_argument(
-        "--output",
-        type=Path,
-        help="Optional file path to save the primary completion.",
-    )
-    add_shared_connection_options(completion_parser)
-
-    embeddings_parser = subparsers.add_parser(
-        "embeddings",
-        help="Generate embedding vectors for text snippets.",
-    )
-    embeddings_parser.add_argument("text", nargs="*", help="Text snippets to embed (repeatable).")
-    embeddings_parser.add_argument("--input-file", type=Path, help="Read additional inputs from a file.")
-    embeddings_parser.add_argument("--model", help="Override embedding model.")
-    embeddings_parser.add_argument(
-        "--format",
-        choices=("table", "json", "plain"),
-        default="table",
-        help="Render format for embeddings output.",
-    )
-    embeddings_parser.add_argument(
-        "--output",
-        type=Path,
-        help="Write embeddings payload to a JSON file.",
-    )
-    embeddings_parser.add_argument(
-        "--show-dimensions",
-        action="store_true",
-        help="Include vector dimensionality in the table view.",
-    )
-    add_shared_connection_options(embeddings_parser)
-
-    models_parser = subparsers.add_parser(
-        "models",
-        help="List available models from the DeepSeek API.",
-    )
-    models_parser.add_argument("--filter", help="Filter models containing this substring.")
-    models_parser.add_argument("--limit", type=int, help="Limit the number of rows shown.")
-    models_parser.add_argument("--json", action="store_true", help="Output raw JSON instead of a table.")
-    add_shared_connection_options(models_parser)
-
-    agent_parser = subparsers.add_parser(
-        "agent",
-        help="Run the agentic developer assistant with repository tools",
-    )
-    agent_parser.add_argument("prompt", help="User instruction for the agent")
-    agent_parser.add_argument(
+    parser.add_argument(
         "--follow-up",
         action="append",
         default=[],
-        help="Additional user inputs appended after the initial prompt (repeatable)",
+        help="Additional user inputs appended after --prompt (repeatable).",
     )
-    agent_parser.add_argument("--system", help="Override system prompt")
-    agent_parser.add_argument("--model", help="Override model name")
-    agent_parser.add_argument(
+    parser.add_argument(
         "--workspace",
+        type=Path,
         default=Path.cwd(),
-        help="Workspace directory (default: current directory)",
+        help="Workspace directory for agent operations (default: current directory).",
     )
-    agent_parser.add_argument(
+    parser.add_argument("--model", help="Override the default agent model.")
+    parser.add_argument("--system", help="Override the active system prompt.")
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=DEFAULT_MAX_STEPS,
-        help="Maximum reasoning steps before aborting",
+        help="Maximum reasoning steps before aborting.",
     )
-    agent_parser.add_argument(
+    parser.add_argument(
         "--transcript",
-        help="Optional transcript path (default stored under ~/.config/deepseek-cli)",
+        help="Optional transcript path (default stored under ~/.config/deepseek-cli).",
     )
-    agent_parser.add_argument("--read-only", action="store_true", help="Disable write operations")
-    agent_parser.add_argument(
+    parser.add_argument("--read-only", action="store_true", help="Disable write operations.")
+    parser.add_argument(
+        "--no-global",
+        action="store_false",
+        dest="allow_global",
+        help="Restrict edits to the workspace directory only.",
+    )
+    parser.add_argument(
         "--global",
         action="store_true",
         dest="allow_global",
-        help="Allow edits outside the workspace root (use with caution)",
+        help="Allow edits outside the workspace root.",
     )
-    agent_parser.add_argument("--quiet", action="store_true", help="Suppress progress logs")
-    add_shared_connection_options(agent_parser)
+    parser.set_defaults(allow_global=True)
+    parser.add_argument("--quiet", action="store_true", help="Suppress detailed progress logs.")
+
+    add_shared_connection_options(parser)
+
+    subparsers = parser.add_subparsers(dest="command")
 
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_sub = config_parser.add_subparsers(dest="config_command")
@@ -219,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
             "system_prompt",
             "chat_system_prompt",
             "chat_stream_style",
+            "tavily_api_key",
         ],
     )
     config_set.add_argument("value", help="Configuration value (wrap in quotes for spaces)")
@@ -236,10 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
             "system_prompt",
             "chat_system_prompt",
             "chat_stream_style",
+            "tavily_api_key",
         ],
     )
 
-    config_init = config_sub.add_parser("init", help="Interactive configuration wizard")
+    config_sub.add_parser("init", help="Interactive configuration wizard")
 
     return parser
 
@@ -247,6 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
 def add_shared_connection_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key", help="DeepSeek API key (overrides env/config)")
     parser.add_argument("--base-url", help="DeepSeek API base URL")
+    parser.add_argument(
+        "--tavily-api-key",
+        help="Tavily API key used for @tavily search commands and the tavily_search tool.",
+    )
 
 
 def create_client(config: ResolvedConfig) -> OpenAI:
@@ -286,9 +240,10 @@ class InteractiveSessionState:
     workspace: Path
     model: str
     system_prompt: str
+    tavily_api_key: str
     max_steps: int = DEFAULT_MAX_STEPS
     read_only: bool = False
-    allow_global_access: bool = False
+    allow_global_access: bool = True
     verbose: bool = True
     transcript_path: Optional[Path] = None
     default_workspace: Path = field(init=False)
@@ -299,11 +254,13 @@ class InteractiveSessionState:
     default_allow_global_access: bool = field(init=False)
     default_verbose: bool = field(init=False)
     default_transcript_path: Optional[Path] = field(init=False)
+    default_tavily_api_key: str = field(init=False)
 
     def __post_init__(self) -> None:
         self.default_workspace = self.workspace
         self.default_model = self.model
         self.default_system_prompt = self.system_prompt
+        self.default_tavily_api_key = self.tavily_api_key
         self.default_max_steps = self.max_steps
         self.default_read_only = self.read_only
         self.default_allow_global_access = self.allow_global_access
@@ -326,6 +283,13 @@ def _set_runtime_api_key(value: Optional[str]) -> None:
         os.environ.pop(ENV_API_KEY, None)
 
 
+def _set_runtime_tavily_api_key(value: Optional[str]) -> None:
+    if value:
+        os.environ[ENV_TAVILY_API_KEY] = value
+    else:
+        os.environ.pop(ENV_TAVILY_API_KEY, None)
+
+
 def _store_api_key(value: Optional[str]) -> bool:
     config = load_config()
     config["api_key"] = value
@@ -339,6 +303,26 @@ def _store_api_key(value: Optional[str]) -> bool:
         MAIN_CONSOLE.print(f"[green]Saved API key ({_mask_api_key(value)}) to config.[/]")
     else:
         MAIN_CONSOLE.print("[yellow]Cleared stored API key.[/]")
+    return True
+
+
+def _store_tavily_api_key(value: Optional[str]) -> bool:
+    config = load_config()
+    config["tavily_api_key"] = value
+    try:
+        save_config(config)
+    except RuntimeError as exc:
+        MAIN_CONSOLE.print(f"[red]Unable to persist Tavily API key:[/] {exc}")
+        return False
+    _set_runtime_tavily_api_key(value)
+    if value:
+        MAIN_CONSOLE.print(
+            f"[green]Saved Tavily API key ({_mask_api_key(value)}) to config.[/]"
+        )
+    else:
+        MAIN_CONSOLE.print(
+            "[yellow]Reverted to the bundled Tavily developer key.[/]"
+        )
     return True
 
 
@@ -384,8 +368,13 @@ def _command_reference_table() -> Table:
         ("@transcript [PATH]", "Log transcripts to a file"),
         ("@clear-transcript", "Disable transcript logging"),
         ("@settings", "Display current session status"),
+        ("@chat <TEXT>", "Send a lightweight chat request without invoking the agent"),
+        ("@complete <TEXT>", "Request a single completion using the completion model"),
+        ("@embed <TEXT…>", "Generate embeddings for one or more snippets"),
+        ("@models [--filter X] [--limit N] [--json]", "List available API models"),
         ("@reset", "Restore defaults from config"),
         ("@api", "Update the stored DeepSeek API key"),
+        ("@tavily", "Update the Tavily API key used for web search"),
         ("@verbose", "Enable detailed thought process logging"),
         ("@quiet", "Disable detailed thought process logging"),
     ]
@@ -400,6 +389,10 @@ def _session_status_panel(state: InteractiveSessionState) -> Panel:
     grid.add_column(style="white")
     grid.add_row("Workspace", str(state.workspace))
     grid.add_row("Model", state.model)
+    tavily_display = _mask_api_key(state.tavily_api_key)
+    if state.tavily_api_key == DEFAULT_TAVILY_API_KEY:
+        tavily_display += " (default)"
+    grid.add_row("Tavily key", tavily_display)
     grid.add_row(
         "System",
         "custom prompt" if state.system_prompt != state.default_system_prompt else "default prompt",
@@ -425,9 +418,9 @@ def _print_interactive_help() -> None:
     MAIN_CONSOLE.print(
         Panel(
             Text(
-                "Enter your request at the prompt. Use a trailing '\\' to extend across lines.\n"
+                "Enter your request at the prompt. Use Shift+Enter to insert new lines.\n"
                 "Commands can start with @, /, or :.\n"
-                "Press Enter on an empty line to send the prompt together with automated test and bug checks.",
+                "Press Enter to send the prompt together with automated test and bug checks.",
                 style="bright_white",
             ),
             border_style="bright_magenta",
@@ -511,6 +504,11 @@ def _handle_interactive_command(
     state: InteractiveSessionState,
     *,
     on_api_command: Optional[Callable[[List[str]], None]] = None,
+    on_tavily_command: Optional[Callable[[List[str]], None]] = None,
+    on_chat_command: Optional[Callable[[List[str]], None]] = None,
+    on_completion_command: Optional[Callable[[List[str]], None]] = None,
+    on_embedding_command: Optional[Callable[[List[str]], None]] = None,
+    on_models_command: Optional[Callable[[List[str]], None]] = None,
 ) -> bool:
     command_line = raw[1:].strip()
     if not command_line:
@@ -534,6 +532,30 @@ def _handle_interactive_command(
         return True
     if name in {"settings", "status"}:
         MAIN_CONSOLE.print(_session_status_panel(state))
+        return True
+    if name == "chat":
+        if on_chat_command:
+            on_chat_command(args)
+        else:
+            MAIN_CONSOLE.print("[red]Chat command unavailable in this session.[/]")
+        return True
+    if name in {"complete", "completion"}:
+        if on_completion_command:
+            on_completion_command(args)
+        else:
+            MAIN_CONSOLE.print("[red]Completion command unavailable in this session.[/]")
+        return True
+    if name in {"embed", "embedding", "embeddings"}:
+        if on_embedding_command:
+            on_embedding_command(args)
+        else:
+            MAIN_CONSOLE.print("[red]Embedding command unavailable in this session.[/]")
+        return True
+    if name in {"models", "model-list"}:
+        if on_models_command:
+            on_models_command(args)
+        else:
+            MAIN_CONSOLE.print("[red]Model listing is unavailable in this session.[/]")
         return True
     if name == "workspace":
         if not args:
@@ -646,6 +668,7 @@ def _handle_interactive_command(
         state.workspace = state.default_workspace
         state.model = state.default_model
         state.system_prompt = state.default_system_prompt
+        state.tavily_api_key = state.default_tavily_api_key
         state.max_steps = state.default_max_steps
         state.read_only = state.default_read_only
         state.allow_global_access = state.default_allow_global_access
@@ -657,6 +680,10 @@ def _handle_interactive_command(
     if name == "api":
         if on_api_command:
             on_api_command(args)
+        return True
+    if name == "tavily":
+        if on_tavily_command:
+            on_tavily_command(args)
         return True
     MAIN_CONSOLE.print(f"[red]Unknown command '{name}'. Type /help for options.[/]")
     return True
@@ -690,6 +717,7 @@ def _run_interactive_agent_prompt(
         max_steps=state.max_steps,
         verbose=state.verbose,
         transcript_path=state.transcript_path,
+        tavily_api_key=state.tavily_api_key,
     )
     try:
         agent_loop(client, options)
@@ -697,13 +725,31 @@ def _run_interactive_agent_prompt(
         MAIN_CONSOLE.print(f"[red]Agent error:[/] {exc}")
 
 
-def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
+def run_interactive_agent_shell(
+    resolved: ResolvedConfig,
+    *,
+    workspace_override: Optional[Path] = None,
+    model_override: Optional[str] = None,
+    system_override: Optional[str] = None,
+    max_steps_override: Optional[int] = None,
+    read_only: bool = False,
+    allow_global: bool = True,
+    transcript_override: Optional[Path] = None,
+    verbose: bool = True,
+) -> int:
     current_config = resolved
     client = create_client(current_config)
+    workspace = (workspace_override or Path.cwd()).resolve()
     state = InteractiveSessionState(
-        workspace=Path.cwd().resolve(),
-        model=current_config.model,
-        system_prompt=current_config.system_prompt,
+        workspace=workspace,
+        model=model_override or current_config.model,
+        system_prompt=system_override or current_config.system_prompt,
+        tavily_api_key=current_config.tavily_api_key,
+        max_steps=max_steps_override if max_steps_override is not None else DEFAULT_MAX_STEPS,
+        read_only=read_only,
+        allow_global_access=allow_global,
+        verbose=verbose,
+        transcript_path=transcript_override,
     )
 
     MAIN_CONSOLE.print(
@@ -739,46 +785,162 @@ def run_interactive_agent_shell(resolved: ResolvedConfig) -> int:
             client = create_client(current_config)
             MAIN_CONSOLE.print("[green]API key updated and reloaded for this session.[/]")
 
+    def handle_tavily_command(args: List[str]) -> None:
+        MAIN_CONSOLE.print(
+            f"[cyan]Current Tavily key:[/] {_mask_api_key(state.tavily_api_key)}"
+        )
+        if args:
+            keyword = args[0].lower()
+            if keyword == "show":
+                return
+            if keyword in {"default", "reset"}:
+                if _store_tavily_api_key(None):
+                    current_config.tavily_api_key = DEFAULT_TAVILY_API_KEY
+                    state.tavily_api_key = DEFAULT_TAVILY_API_KEY
+                    MAIN_CONSOLE.print(
+                        "[green]Reverted to the bundled Tavily developer key.[/]"
+                    )
+                return
+        new_key = None
+        if args:
+            new_key = args[0]
+        else:
+            new_key = _prompt_for_api_key(
+                allow_empty=True,
+                prompt_text="Enter Tavily API key (press Enter to cancel)",
+            )
+            if not new_key:
+                MAIN_CONSOLE.print("[yellow]Tavily API key unchanged.[/]")
+                return
+        if _store_tavily_api_key(new_key):
+            current_config.tavily_api_key = new_key
+            state.tavily_api_key = new_key
+            MAIN_CONSOLE.print(
+                "[green]Tavily API key updated and will be used going forward.[/]"
+            )
+
+    def handle_chat_command(args: List[str]) -> None:
+        if not args:
+            MAIN_CONSOLE.print("[red]Usage: @chat <message>[/]")
+            return
+        prompt_text = " ".join(args)
+        options = ChatOptions(
+            prompt=prompt_text,
+            system_prompt=state.system_prompt,
+            model=state.model,
+            stream=True,
+            temperature=0.1,
+            top_p=1.0,
+            max_tokens=None,
+            interactive=False,
+            transcript_path=state.transcript_path,
+            stream_style=current_config.chat_stream_style,
+        )
+        run_chat(client, options)
+
+    def handle_completion_command(args: List[str]) -> None:
+        if not args:
+            MAIN_CONSOLE.print("[red]Usage: @complete <prompt>[/]")
+            return
+        prompt_text = " ".join(args)
+        options = CompletionOptions(
+            prompt=prompt_text,
+            input_file=None,
+            suffix=None,
+            model=current_config.completion_model or state.model,
+            max_tokens=None,
+            temperature=0.1,
+            top_p=1.0,
+            n=1,
+            stop=[],
+            stream=False,
+            stream_style=current_config.chat_stream_style,
+            output_path=None,
+        )
+        run_completion(client, options, console=MAIN_CONSOLE)
+
+    def handle_embedding_command(args: List[str]) -> None:
+        if not args:
+            MAIN_CONSOLE.print("[red]Usage: @embed <text>[/]")
+            return
+        options = EmbeddingOptions(
+            texts=args,
+            input_file=None,
+            model=current_config.embedding_model,
+            output_path=None,
+            fmt="table",
+            show_dimensions=False,
+        )
+        run_embeddings(client, options, console=MAIN_CONSOLE)
+
+    def handle_models_command(args: List[str]) -> None:
+        filter_text: Optional[str] = None
+        json_output = False
+        limit: Optional[int] = None
+        idx = 0
+        tokens = list(args)
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token == "--json":
+                json_output = True
+            elif token == "--limit" and idx + 1 < len(tokens):
+                try:
+                    limit = int(tokens[idx + 1])
+                except ValueError:
+                    MAIN_CONSOLE.print("[red]--limit expects an integer value.[/]")
+                    return
+                idx += 1
+            elif token == "--filter" and idx + 1 < len(tokens):
+                filter_text = tokens[idx + 1]
+                idx += 1
+            else:
+                remaining = tokens[idx:]
+                filter_text = " ".join(remaining)
+                break
+            idx += 1
+        options = ModelListOptions(
+            filter=filter_text,
+            json_output=json_output,
+            limit=limit,
+        )
+        list_models(client, options, console=MAIN_CONSOLE)
+
+    session = _build_prompt_session()
+
     while True:
         try:
-            raw = MAIN_CONSOLE.input("[bold bright_cyan]Prompt ▸ [/]")
+            with patch_stdout():
+                raw = session.prompt(PROMPT_MESSAGE)
         except EOFError:
             MAIN_CONSOLE.line()
             return 0
         except KeyboardInterrupt:
             MAIN_CONSOLE.line()
             return 130
-        prompt = raw.strip()
-        if not prompt:
+        stripped = raw.strip()
+        if not stripped:
             continue
-        if prompt[0] in COMMAND_PREFIXES:
+        if stripped[0] in COMMAND_PREFIXES and "\n" not in stripped:
             should_continue = _handle_interactive_command(
-                prompt,
+                stripped,
                 state,
                 on_api_command=handle_api_command,
+                on_tavily_command=handle_tavily_command,
+                on_chat_command=handle_chat_command,
+                on_completion_command=handle_completion_command,
+                on_embedding_command=handle_embedding_command,
+                on_models_command=handle_models_command,
             )
             if not should_continue:
                 return 0
             continue
 
-        prompt_lines = [prompt]
-        while prompt_lines[-1].endswith("\\"):
-            prompt_lines[-1] = prompt_lines[-1].rstrip("\\")
-            try:
-                continuation = MAIN_CONSOLE.input("[bold bright_cyan]… [/]")
-            except EOFError:
-                MAIN_CONSOLE.line()
-                break
-            except KeyboardInterrupt:
-                MAIN_CONSOLE.line()
-                break
-            prompt_lines.append(continuation.rstrip())
-        final_prompt = "\n".join(line.strip() for line in prompt_lines if line.strip())
+        final_prompt = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
+        if not final_prompt:
+            continue
         follow_ups = _collect_follow_ups()
         follow_ups.extend(build_test_followups(state.workspace))
         follow_ups.extend([AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP])
-        if not final_prompt:
-            continue
         _run_interactive_agent_prompt(client, state, final_prompt, follow_ups)
 
 def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
@@ -805,10 +967,11 @@ def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
         + [AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP],
         workspace=workspace,
         read_only=args.read_only,
-        allow_global_access=getattr(args, "allow_global", False),
+        allow_global_access=args.allow_global,
         max_steps=args.max_steps,
         verbose=not args.quiet,
         transcript_path=transcript_path,
+        tavily_api_key=resolved.tavily_api_key,
     )
     agent_loop(client, options)
     return 0
@@ -851,6 +1014,13 @@ def handle_config(args: argparse.Namespace) -> int:
             return 1
         config["api_key"] = api_key.strip() or None
         try:
+            tavily_key = input(
+                "Enter Tavily API key (optional, press Enter to use default): "
+            )
+        except EOFError:
+            tavily_key = ""
+        config["tavily_api_key"] = tavily_key.strip() or None
+        try:
             save_config(config)
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr)
@@ -878,31 +1048,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     config_kwargs = {
         "api_key": getattr(args, "api_key", None),
         "base_url": getattr(args, "base_url", None),
+        "tavily_api_key": getattr(args, "tavily_api_key", None),
+        "model": getattr(args, "model", None),
+        "system_prompt": getattr(args, "system", None),
     }
-    if args.command == "chat":
-        config_kwargs.update(
-            {
-                "chat_model": getattr(args, "model", None),
-                "chat_system_prompt": getattr(args, "system", None),
-                "chat_stream_style": getattr(args, "stream_style", None),
-            }
-        )
-    elif args.command == "completions":
-        config_kwargs["completion_model"] = getattr(args, "model", None)
-    elif args.command == "embeddings":
-        config_kwargs["embedding_model"] = getattr(args, "model", None)
-    else:
-        config_kwargs.update(
-            {
-                "model": getattr(args, "model", None),
-                "system_prompt": getattr(args, "system", None),
-            }
-        )
     try:
         resolved = resolve_runtime_config(**config_kwargs)
     except RuntimeError as exc:
         missing_api_key = "No DeepSeek API key found" in str(exc)
-        if args.command is None and missing_api_key:
+        if getattr(args, "prompt", None) is None and args.command is None and missing_api_key:
             MAIN_CONSOLE.print(
                 Panel(
                     Text(
@@ -931,22 +1085,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
 
-    if args.command is None:
-        return run_interactive_agent_shell(resolved)
-
-    if args.command == "chat":
-        return handle_chat(args, resolved)
-    if args.command == "completions":
-        return handle_completions(args, resolved)
-    if args.command == "embeddings":
-        return handle_embeddings(args, resolved)
-    if args.command == "models":
-        return handle_models(args, resolved)
-    if args.command == "agent":
+    if getattr(args, "prompt", None):
         return handle_agent(args, resolved)
 
-    parser.print_help()
-    return 1
+    workspace = Path(args.workspace).expanduser().resolve()
+    transcript_path = _resolve_transcript_path(args.transcript) if args.transcript else None
+
+    return run_interactive_agent_shell(
+        resolved,
+        workspace_override=workspace,
+        model_override=args.model,
+        system_override=args.system,
+        max_steps_override=args.max_steps,
+        read_only=args.read_only,
+        allow_global=args.allow_global,
+        transcript_override=transcript_path,
+        verbose=not args.quiet,
+    )
 
 
 if __name__ == "__main__":

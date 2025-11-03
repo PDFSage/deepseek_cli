@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_MODEL,
     DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_TAVILY_API_KEY,
 )
 
 ENV_API_KEY = "DEEPSEEK_API_KEY"
@@ -30,6 +31,7 @@ ENV_COMPLETION_MODEL = "DEEPSEEK_COMPLETION_MODEL"
 ENV_EMBEDDING_MODEL = "DEEPSEEK_EMBEDDING_MODEL"
 ENV_CHAT_SYSTEM_PROMPT = "DEEPSEEK_CHAT_SYSTEM_PROMPT"
 ENV_CHAT_STREAM_STYLE = "DEEPSEEK_CHAT_STREAM_STYLE"
+ENV_TAVILY_API_KEY = "TAVILY_API_KEY"
 
 _DEFAULTS: Dict[str, Any] = {
     "api_key": None,
@@ -41,6 +43,7 @@ _DEFAULTS: Dict[str, Any] = {
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
     "chat_system_prompt": DEFAULT_CHAT_SYSTEM_PROMPT,
     "chat_stream_style": DEFAULT_CHAT_STREAM_STYLE,
+    "tavily_api_key": DEFAULT_TAVILY_API_KEY,
 }
 
 
@@ -57,6 +60,7 @@ class ResolvedConfig:
     completion_model: str
     embedding_model: str
     chat_stream_style: str
+    tavily_api_key: str
 
 
 def ensure_config_dir() -> None:
@@ -125,6 +129,7 @@ def resolve_runtime_config(
     completion_model: Optional[str] = None,
     embedding_model: Optional[str] = None,
     chat_stream_style: Optional[str] = None,
+    tavily_api_key: Optional[str] = None,
 ) -> ResolvedConfig:
     """Resolve runtime config using CLI options, environment variables, and stored config."""
 
@@ -151,6 +156,10 @@ def resolve_runtime_config(
         completion_model=completion_model or os.environ.get(ENV_COMPLETION_MODEL) or stored.get("completion_model", DEFAULT_COMPLETION_MODEL),
         embedding_model=embedding_model or os.environ.get(ENV_EMBEDDING_MODEL) or stored.get("embedding_model", DEFAULT_EMBEDDING_MODEL),
         chat_stream_style=(chat_stream_style or os.environ.get(ENV_CHAT_STREAM_STYLE) or stored.get("chat_stream_style", DEFAULT_CHAT_STREAM_STYLE)).lower(),
+        tavily_api_key=tavily_api_key
+        or os.environ.get(ENV_TAVILY_API_KEY)
+        or stored.get("tavily_api_key")
+        or DEFAULT_TAVILY_API_KEY,
     )
     if resolved.chat_stream_style not in {"plain", "markdown", "rich"}:
         resolved.chat_stream_style = DEFAULT_CHAT_STREAM_STYLE
@@ -162,9 +171,10 @@ def pretty_config(config: Mapping[str, Any], *, redact: bool = True) -> str:
 
     payload = dict(config)
     if redact:
-        api_key = payload.get("api_key")
-        if api_key:
-            payload["api_key"] = api_key[:4] + "…" + api_key[-4:]
+        for key in ("api_key", "tavily_api_key"):
+            value = payload.get(key)
+            if value:
+                payload[key] = value[:4] + "…" + value[-4:]
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
@@ -179,6 +189,7 @@ __all__ = [
     "ENV_EMBEDDING_MODEL",
     "ENV_CHAT_SYSTEM_PROMPT",
     "ENV_CHAT_STREAM_STYLE",
+    "ENV_TAVILY_API_KEY",
     "load_config",
     "save_config",
     "update_config",
