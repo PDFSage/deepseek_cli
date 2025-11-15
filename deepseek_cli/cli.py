@@ -17,6 +17,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from packaging.version import Version
@@ -73,16 +74,33 @@ def _build_prompt_session() -> PromptSession:
     """Create a prompt session that supports multiline editing and history."""
     bindings = KeyBindings()
 
-    @bindings.add("enter")
-    def _(event) -> None:
+    def bind_keys(handler: Callable, *sequences: tuple) -> None:
+        """Register key sequences, skipping those unsupported by prompt_toolkit."""
+        for seq in sequences:
+            try:
+                bindings.add(*seq)(handler)
+            except ValueError:
+                continue
+
+    def accept_line(event) -> None:
         buffer = event.app.current_buffer
         event.app.exit(result=buffer.text)
 
-    @bindings.add("s-enter")
-    @bindings.add("c-enter")
-    @bindings.add("escape", "enter")
-    def _(event) -> None:
+    bind_keys(accept_line, ("enter",))
+
+    shift_enter_sequences: List[tuple] = []
+    if hasattr(Keys, "ShiftEnter"):
+        shift_enter_sequences.append((Keys.ShiftEnter,))
+    shift_enter_sequences.append(("shift-enter",))
+
+    def insert_newline(event) -> None:
         event.app.current_buffer.insert_text("\n")
+
+    bind_keys(
+        insert_newline,
+        *shift_enter_sequences,
+        ("escape", "enter"),
+    )
 
     return PromptSession(
         history=InMemoryHistory(),
