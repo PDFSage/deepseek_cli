@@ -97,9 +97,16 @@ now presented through a colourful Rich-powered shell. A command palette is
 displayed on start so you can see the available `/`, `@`, or `:` shortcuts at a
 glance (for example `@workspace`, `@model`, `@read-only`, `@transcript`,
 `@help`, `@api`, and `@tavily`). Exit with `@quit` or `Ctrl+C`. Each request runs as soon
-as you press Enter—include follow-up guidance in your initial prompt. The
-assistant appends internal follow-ups that run automated tests and regression
-checks until they succeed or a clear justification is provided.
+as you press Enter—include follow-up guidance in your initial prompt. Every run
+ launches a dedicated planner before switching to worker iterations that execute
+ one plan step at a time, re-evaluating the plan or even starting a new planning
+ cycle whenever the result still misses the mark. The assistant appends internal
+ follow-ups that run automated tests and regression checks until they succeed or
+ a clear justification is provided, and when a bug appears it performs a Flow
+ Attempt (diagnose the cause, propose a fix, and evaluate the fix quality before
+ editing). When additional context is required it can
+call Tavily Search plus the new Tavily Extract tool (configured through
+`TAVILY_API_KEY`) to pull in authoritative documentation before coding.
 Use `@global on` when you need to edit files outside the active workspace.
 During execution the shell streams the agent's thought process (`▌` lines) while
 non-shell tools render as bright spinners with elapsed time, mirroring modern

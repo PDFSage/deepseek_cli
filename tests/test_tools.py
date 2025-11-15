@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import stat
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -45,6 +46,33 @@ def test_tavily_search_requires_query(tmp_path: Path) -> None:
     executor = ToolExecutor(root=tmp_path)
     response = executor.tavily_search("")
     assert "must not be empty" in response
+
+
+def test_tavily_extract_requires_url(tmp_path: Path) -> None:
+    executor = ToolExecutor(root=tmp_path)
+    response = executor.tavily_extract("")
+    assert "must not be empty" in response
+
+
+def test_tavily_extract_formats_payload(tmp_path: Path) -> None:
+    executor = ToolExecutor(root=tmp_path)
+    payload = {
+        "title": "Example Doc",
+        "url": "https://example.com/doc",
+        "summary": "Helpful overview",
+        "content": "body" * 100,
+        "images": ["https://example.com/a.png", "https://example.com/b.png"],
+        "metadata": {"lang": "en", "topic": "demo"},
+    }
+    mock_response = mock.MagicMock()
+    mock_response.read.return_value = json.dumps(payload).encode("utf-8")
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+    with mock.patch("urllib.request.urlopen", return_value=mock_response):
+        outcome = executor.tavily_extract("https://example.com/doc")
+    assert "Example Doc" in outcome
+    assert "Helpful overview" in outcome
+    assert "Content Preview" in outcome
 
 
 def test_move_path_moves_file(tmp_path: Path) -> None:

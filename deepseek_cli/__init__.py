@@ -6,4 +6,4 @@ from . import testing as testing
 
 __all__ = ["__version__", "testing"]
 
-__version__ = "0.5.3"
+__version__ = "0.6.4"

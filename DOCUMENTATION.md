@@ -98,8 +98,10 @@ timestamps unless the user requests raw JSON for automation pipelines.
 - Workspace path, read-only flag, and `allow_global_access` flag (now enabled by default so the agent can operate anywhere on disk).
 - Max reasoning steps, verbosity toggle, and transcript path.
 
-Agent invocations append two hidden follow-ups (`AUTO_TEST_FOLLOW_UP` and `AUTO_BUG_FOLLOW_UP`) so the
-model automatically plans to run tests and regression checks before finishing.
+ Agent invocations append two hidden follow-ups (`AUTO_TEST_FOLLOW_UP` and `AUTO_BUG_FOLLOW_UP`) so the
+ model automatically plans to run tests and regression checks before finishing. The bug follow-up now
+ calls for a Flow Attempt whenever a regression is spotted: diagnose the root cause, propose the fix,
+ and evaluate its quality before applying.
 
 ### Interactive Shell
 Running `deepseek` with no arguments enters an interactive agent shell. The shell maintains an

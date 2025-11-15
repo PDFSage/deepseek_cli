@@ -456,6 +456,107 @@ class ToolExecutor:
 
         return "\n\n".join(lines)
 
+    def tavily_extract(
+        self,
+        url: str,
+        extract_depth: str = "basic",
+        include_images: bool = False,
+        include_links: bool = True,
+        max_pages: int = 1,
+        api_key: Optional[str] = None,
+    ) -> ToolResult:
+        cleaned_url = (url or "").strip()
+        if not cleaned_url:
+            return "URL must not be empty."
+        depth = (extract_depth or "basic").lower()
+        if depth not in {"basic", "advanced"}:
+            depth = "basic"
+        try:
+            pages = int(max_pages)
+        except (TypeError, ValueError):
+            pages = 1
+        pages = max(1, min(pages, 5))
+        key = (api_key or self.tavily_api_key or DEFAULT_TAVILY_API_KEY or "").strip()
+        if not key:
+            key = DEFAULT_TAVILY_API_KEY
+        request_payload = {
+            "api_key": key,
+            "url": cleaned_url,
+            "extract_depth": depth,
+            "include_images": bool(include_images),
+            "include_links": bool(include_links),
+            "max_pages": pages,
+        }
+        request = urllib.request.Request(
+            "https://api.tavily.com/extract",
+            data=json.dumps(request_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = ""
+            if exc.code in {401, 403}:
+                instructions = (
+                    f"Tavily rejected the request (HTTP {exc.code}). "
+                    "Provide a valid Tavily API key via `deepseek config set tavily_api_key YOUR_KEY` "
+                    "or the interactive @tavily command."
+                )
+                if error_body:
+                    return instructions + f"\nResponse body:\n{error_body}"
+                return instructions
+            details = f"\nResponse body:\n{error_body}" if error_body else ""
+            return f"Tavily extract failed (HTTP {exc.code}).{details}"
+        except urllib.error.URLError as exc:
+            return f"Tavily extract failed: {exc}"
+        except Exception as exc:  # pragma: no cover
+            return f"Tavily extract encountered an unexpected error: {exc}"
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return f"Tavily extract response was not valid JSON:\n{body}"
+
+        lines: List[str] = []
+        title = payload.get("title") or "Extracted content"
+        source_url = payload.get("url") or cleaned_url
+        summary = (
+            payload.get("summary")
+            or payload.get("description")
+            or payload.get("answer")
+            or ""
+        ).strip()
+        lines.append(f"Title: {title}")
+        lines.append(f"Source: {source_url}")
+        if summary:
+            lines.append(f"Summary: {summary}")
+
+        content = (payload.get("content") or payload.get("extract") or "").strip()
+        if content:
+            snippet = content[:2000] + ("…" if len(content) > 2000 else "")
+            lines.append("Content Preview:\n" + snippet)
+
+        images = payload.get("images") or []
+        if images:
+            display = ", ".join(images[:3])
+            if len(images) > 3:
+                display += f" … (+{len(images) - 3} more)"
+            lines.append("Images: " + display)
+
+        metadata = payload.get("metadata") or {}
+        if metadata:
+            meta_pairs = "; ".join(f"{k}={v}" for k, v in list(metadata.items())[:6])
+            lines.append("Metadata: " + meta_pairs)
+
+        if not summary and not content:
+            lines.append("No textual content returned by Tavily.")
+
+        return "\n\n".join(lines)
+
     def http_request(
         self,
         url: str,
@@ -843,6 +944,37 @@ def tool_schemas() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "tavily_extract",
+                "description": "Extract structured content from a URL using Tavily's API.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "extract_depth": {
+                            "type": "string",
+                            "enum": ["basic", "advanced"],
+                            "default": "basic",
+                        },
+                        "include_images": {"type": "boolean", "default": False},
+                        "include_links": {"type": "boolean", "default": True},
+                        "max_pages": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "default": 1,
+                        },
+                        "api_key": {
+                            "type": "string",
+                            "description": "Override the Tavily API key for this request.",
+                        },
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
     ]
 
 
@@ -873,6 +1005,7 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
     )
     specs = tool_schemas()
     thought_console = Console(stderr=True, highlight=False)
+    narration_console = Console(highlight=False)
     transcript_path = options.transcript_path
     executor = ToolExecutor(
         options.workspace,
@@ -903,6 +1036,45 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
     modifying_tools = {"write_file", "move_path", "apply_patch", "download_file"}
 
     with live_context as live_display:
+        def emit_plan_update(step_index: int, text: str) -> None:
+            cleaned = (text or "").strip()
+            if not cleaned:
+                return
+            narration_console.print(
+                f"\n[Plan step {step_index}] Implementation plan:\n{cleaned}\n",
+                highlight=False,
+            )
+
+        def _clean_value(value: Any) -> str:
+            text = str(value)
+            return text if len(text) <= 80 else text[:77] + "…"
+
+        def describe_tool_call(name: str, arguments: Dict[str, Any]) -> str:
+            interesting = (
+                "path",
+                "paths",
+                "source",
+                "destination",
+                "command",
+                "pattern",
+                "query",
+                "url",
+            )
+            details = []
+            for key in interesting:
+                if key in arguments:
+                    details.append(f"{key}={_clean_value(arguments[key])}")
+            if details:
+                return f"{name} ({', '.join(details)})"
+            return name
+
+        def mark_step_completed(step_index: int, name: str, arguments: Dict[str, Any]) -> None:
+            summary = describe_tool_call(name, arguments)
+            narration_console.print(
+                f"[Worker step {step_index}] Completed: {summary}",
+                highlight=False,
+            )
+
         def thought(message: str, *, style: str = "bright_blue") -> None:
             if not options.verbose:
                 return
@@ -958,13 +1130,21 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                 }
                 messages.append(assistant_tool_message)
                 log_to_transcript(assistant_tool_message, step_index=step)
+                plan_text = (message.content or "").strip()
+                if plan_text:
+                    emit_plan_update(step, plan_text)
                 for tool_call in message.tool_calls:
                     name = tool_call.function.name
+                    parsed_arguments: Optional[Dict[str, Any]] = None
                     try:
                         arguments = json.loads(tool_call.function.arguments or "{}")
                     except json.JSONDecodeError as exc:
                         result = f"Failed to decode arguments for {name}: {exc}"
                     else:
+                        if isinstance(arguments, dict):
+                            parsed_arguments = arguments
+                        else:
+                            parsed_arguments = {"value": arguments}
                         if name == "run_shell":
                             if options.verbose:
                                 thought(f"Tool request: {name}({arguments})", style="magenta")
@@ -1004,6 +1184,8 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                         persist_output(result)
                     elif name == "run_shell" and isinstance(result, str):
                         thought(f"{name} completed · {len(result)} characters captured.", style="dim")
+                    if parsed_arguments is not None:
+                        mark_step_completed(step, name, parsed_arguments)
             else:
                 content = message.content or ""
                 assistant_message = {"role": "assistant", "content": content}
