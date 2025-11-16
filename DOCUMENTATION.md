@@ -56,6 +56,16 @@ Both chat and agent modes support transcripts. When the user supplies `--transcr
 - Agent mode resolves relative transcript paths inside the workspace so outputs stay co-located with
   project files. Each logged message stores the step index along with the raw OpenAI message payload.
 
+### Monitoring Progress
+- Verbose mode is enabled by default (unless the user passes `--quiet` or triggers the `@quiet`
+  interactive command). Keeping it on surfaces the `▌` debug stream on stderr that explains which step
+  is running, how long the previous message was, and when tools begin or end.
+- `BreadcrumbLogger` always writes to stdout so plan refreshes, worker step boundaries, and tool
+  start/end summaries remain visible even if verbose mode is disabled.
+- For deep dives rerun with a transcript destination (`--transcript path.jsonl` or `@transcript` in the
+  shell). The resulting JSONL file captures every planner and worker exchange, allowing precise
+  debugging of why a run stalled or made a poor decision.
+
 ## Chat Workflow (`deepseek_cli/chat.py`)
 `ChatOptions` captures all user-configurable parameters, including the preferred streaming style, and
 `run_chat()` powers the `@chat` shortcut inside the interactive shell. It builds the initial message set
@@ -143,11 +153,15 @@ paths against the workspace root unless `allow_global_access` is enabled (the de
      invocations that do not execute a shell command surface as Rich progress spinners with elapsed time,
      mirroring modern coding CLIs.
    - If the assistant returns plain text, echo it to stdout and terminate successfully.
-4. If `max_steps` is reached without a final reply, print guidance suggesting a rerun or transcript
-   inspection.
+   4. If `max_steps` is reached without a final reply, print guidance suggesting a rerun or transcript
+      inspection.
 
-Verbose mode (`--quiet` absent) prints debug information to stderr describing the active step, last
-message size, and tool invocations to help users understand the agent’s reasoning process.
+   Verbose mode (`--quiet` absent) prints debug information to stderr describing the active step, last
+   message size, and tool invocations to help users understand the agent’s reasoning process.
+   Regardless of verbose settings, the stdout console now receives Claude/Codex-style breadcrumbs:
+   `BreadcrumbLogger` surfaces plan refreshes, worker step boundaries, and the start/end of every tool
+   invocation (with lightweight argument and result summaries). This mirrors the autopilot feeds from
+   other coding CLIs and keeps users informed even when the verbose stream is suppressed.
 
 ## Configuration Subcommands (`handle_config`)
 `deepseek config show` reads the stored JSON and optionally redacts the API key before printing.

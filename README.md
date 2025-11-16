@@ -1,201 +1,95 @@
-# DeepSeek CLI
 
-> This CLI is open source at https://github.com/PDFSage/deepseek_cli – collaborators and maintainers are welcome! Submit ideas, issues, or pull requests to help the project grow.
+• DeepSeek CLI Stack
 
-https://pypi.org/project/deepseek-agent/
+  - Entry and configuration flow stay entirely inside this repo: both console
+    scripts land in deepseek_cli.cli:main, which resolves config via CLI
+    flags, env vars, then JSON in ~/.config/deepseek-cli/config.json, so the
+    orchestrator always runs locally before it ever talks to DeepSeek’s API
+    (DOCUMENTATION.md:8-51).
+  - The default experience is a PromptToolkit/Rich shell that exposes /, @,
+    and : shortcuts; every run launches a planner, then iterates plan steps
+    with automated test/flow-attempt follow-ups, Tavily-assisted research,
+    and @global workspace overrides, mirroring “Claude/Codex-style” status
+    breadcrumbs the whole time (README.md:94-118).
+  - LLM actions are defined up front as OpenAI-style JSON tool schemas (list/
+    read/write/move/stat/search/apply_patch/run_shell/python_repl/http_request/
+    download_file, etc.) and implemented by a single ToolExecutor, so adding a
+    new executor module is as simple as registering another Python method and
+    schema entry (deepseek_cli/agent.py:856-1041, DOCUMENTATION.md:125-144).
+  - agent_loop() keeps the Worker conversation state, repeatedly calling
+    client.chat.completions.create(..., tool_choice="auto"), decoding tool
+    arguments, executing them locally, truncating oversized tool output,
+    persisting transcripts, and stopping only when the LLM emits a final
+    assistant reply or the max-step guard trips (deepseek_cli/agent.py:1138-
+    1274, DOCUMENTATION.md:145-164).
+  - State updates are first-class: transcript files log every OpenAI
+    payload with the step index, stderr streams per-step ▌ reasoning, stdout
+    BreadcrumbLogger reports planner refreshes / worker steps / tool start-
+    stop, and users can replay the JSONL traces later (README.md:120-129,
+    DOCUMENTATION.md:52-67, deepseek_cli/agent.py:1148-1252).
 
-Developer-focused command line tools for working with DeepSeek models. The CLI
-packages both an interactive chat shell and an agentic coding assistant with
-repository-aware tooling, plus configuration helpers and transcript logging.
+  Cross-CLI Differences
 
-## Features
-- Unified agent shell orchestrates tool-aware coding sessions with the DeepSeek
-  API, optional read-only mode, transcripts, and workspace controls. It launches
-  by default when you run `deepseek`.
-- Inline shortcuts (`@chat`, `@complete`, `@embed`, `@models`) surface chat,
-  completion, embedding, and model-list primitives without leaving the agent
-  shell.
-- Auto-detects likely project test commands and reminds the agent to run them,
-  keeping changes validated against the repo's real workflows.
-- Config mode (`deepseek config`) manages stored defaults while respecting
-  environment variable overrides.
-- Interactive mode now launches a colourful Rich-powered shell that surfaces
-  `/` and `@` command shortcuts, streams progress spinners for non-shell tool
-  calls, and lets you update the stored API key without leaving the session.
-- Built-in Tavily web search support supplements the agent with live research,
-  using a bundled developer key that you can override per session or in config.
-- Ships as a Python package with an executable entry point and Homebrew formula
-  for distribution flexibility.
+  - Control plane location: DeepSeek’s Python process is the engine—it owns
+    tool execution inside the user’s repo and only asks the remote LLM for
+    the next JSON-coded step. Claude Code runs Anthropic’s planner/worker in
+    the cloud and mirrors a remote container (with “Computer Use” actions like
+    bash, editor operations, UI clicks) back through its client; Codex CLI
+    (the harness we’re in now) gives the remote LLM direct access to sandboxed
+    primitives such as shell, apply_patch, plan, etc., so there is no local
+    orchestrator beyond the thin relay; Gemini CLI (Gemini Code Assist) pipes
+    prompts to Google’s hosted agent service and typically executes file edits/
+    tests in managed Cloud Workstations or a gcloud-connected repo.
+  - Action schema granularity: DeepSeek uses strictly-defined OpenAI function
+    specs that map 1:1 to Python methods and returns UTF-8 strings; Claude Code
+    encodes Anthropic tool_use events that can emit both structured payloads
+    (e.g., JSON for write_file) and binary screen diffs; Codex CLI calls each
+    tool with bespoke RPC envelopes ({"command": ["bash","-lc", ...]} or lark-
+    patched diffs) and enforces sandbox/approval rules instead of JSON schemas;
+    Gemini CLI routes higher-level tasks (code_assist.apply_patch, test.run,
+    dependency.update) through Google Cloud APIs that stream structured “event”
+    JSON rather than simple UTF-8 blobs.
+  - Execution & trust boundaries: DeepSeek runs every file system write/test
+    under the user’s UID, honoring --read-only/--no-global flags to fence
+    the workspace; Claude Code executes inside Anthropic-managed sandboxes,
+    uploading/downloading diffs rather than touching your disk directly; Codex
+    CLI executes commands in a controllable sandbox on your machine (with
+    explicit approval modes and optional escalation) so untrusted steps can
+    be denied; Gemini CLI often routes edits through Cloud-hosted mirrors, so
+    credentials and source code sit inside Google’s tenancy during a session.
+  - State, telemetry, and user feedback: DeepSeek exposes JSONL transcripts,
+    verbose ▌ traces, and breadcrumb feeds the user can version-control; Claude
+    Code emphasizes a live TUI with panes for plan/command/output but does not
+    yet export the full JSON stream; Codex CLI shows tool calls implicitly via
+    our conversation but retains approval logs and sandbox reports rather than
+    producing end-user transcripts; Gemini CLI integrates with Google Cloud
+    logging/issue tracking, surfacing status in Cloud consoles or IDE panes
+    rather than local JSON files.
+  - Extensibility/offline posture: DeepSeek is MIT-licensed Python—new tools,
+    new planner logic, or alternative vendors can be dropped in by editing
+    this repo; Claude Code, Codex CLI, and Gemini CLI are closed, vendor-hosted
+    stacks—you can’t extend their action schemas beyond what the providers
+    expose, and offline use is impossible because each requires authenticated
+    access to its respective cloud.
 
-## Requirements
-- Python 3.9 or newer.
-- A DeepSeek API key exported as `DEEPSEEK_API_KEY` or stored via
-  `deepseek config`.
-- `pip` 23+ is recommended. Create a virtual environment for isolated installs.
+  Differences Among Claude Code, Codex CLI, Gemini CLI
 
-## Installation
+  - Claude Code focuses on an Anthropic-run remote workstation with “Computer
+    Use” super-actions (cursor control, OS windowing, browser fetches) layered
+    on top of simpler bash/edit tools, so it can operate entire GUIs but at the
+    cost of higher latency and no direct local repo access.
+  - Codex CLI (this harness) is intentionally minimal: the LLM itself drives
+    plan creation, tool sequencing, and approvals; actions are limited to a
+    curated set (shell, apply_patch, file reads via MCP, optional plan tool)
+    to preserve determinism, and the environment enforces sandbox/approval
+    policies instead of project-configured guardrails.
+  - Gemini CLI (Gemini Code Assist / gcloud integration) leans into Google
+    Cloud infrastructure: tasks are routed through project/workspace metadata,
+    commands can spin up Cloud builds/tests, and the CLI exchanges structured
+    “operation” objects with the Gemini backend so that actions appear
+    alongside other Google Cloud operations (identity, IAM, audit logging).
 
-### From PyPI (recommended once released)
-```bash
-python -m pip install --upgrade pip
-python -m pip install deepseek-agent
-```
-
-To update later, run `python -m pip install --upgrade deepseek-agent`.
-
-### From GitHub
-Install the latest commit directly from GitHub:
-```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@main"
-```
-Specify a tag (for example `v0.2.0`) to pin a release:
-```bash
-python -m pip install "git+https://github.com/PDFSage/deepseek_cli.git@v0.2.0"
-```
-
-### From a local clone
-```bash
-git clone https://github.com/PDFSage/deepseek_cli.git
-cd deepseek_cli
-python -m venv .venv
-source .venv/bin/activate  # On Windows use: .venv\\Scripts\\activate
-python -m pip install --upgrade pip
-python -m pip install -e .  # or `python -m pip install .` for a standard install
-```
-
-The editable install (`-e`) keeps the CLI synced with local source changes while
-developing.
-
-## Configuration
-The CLI resolves settings in the following order:
-1. Command line flags (`--api-key`, `--base-url`, `--model`, etc.).
-2. Environment variables: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
-   `DEEPSEEK_MODEL`, `DEEPSEEK_SYSTEM_PROMPT`, `DEEPSEEK_CHAT_MODEL`,
-   `DEEPSEEK_COMPLETION_MODEL`, `DEEPSEEK_EMBEDDING_MODEL`,
-   `DEEPSEEK_CHAT_STREAM_STYLE`, `TAVILY_API_KEY`.
-3. Stored configuration file at `~/.config/deepseek-cli/config.json`.
-
-Helpful commands:
-```bash
-deepseek config init        # Guided prompt to store your API key
-deepseek config show        # Display the current configuration (API key redacted)
-deepseek config show --raw  # Show the API key in plain text
-deepseek config set model deepseek-reasoner  # Update an individual field
-deepseek config set completion_model deepseek-coder
-deepseek config set chat_stream_style markdown
-deepseek config set tavily_api_key tvly-live-xxxxxxx
-deepseek config unset model
-```
-
-If the config directory is unwritable, fall back to environment variables.
-
-## Usage
-
-### Interactive agent (default)
-Running `deepseek` with no arguments launches the interactive coding agent,
-now presented through a colourful Rich-powered shell. A command palette is
-displayed on start so you can see the available `/`, `@`, or `:` shortcuts at a
-glance (for example `@workspace`, `@model`, `@read-only`, `@transcript`,
-`@help`, `@api`, and `@tavily`). Exit with `@quit` or `Ctrl+C`. Each request runs as soon
-as you press Enter—include follow-up guidance in your initial prompt. Every run
- launches a dedicated planner before switching to worker iterations that execute
- one plan step at a time, re-evaluating the plan or even starting a new planning
- cycle whenever the result still misses the mark. The assistant appends internal
- follow-ups that run automated tests and regression checks until they succeed or
- a clear justification is provided, and when a bug appears it performs a Flow
- Attempt (diagnose the cause, propose a fix, and evaluate the fix quality before
- editing). When additional context is required it can
-call Tavily Search plus the new Tavily Extract tool (configured through
-`TAVILY_API_KEY`) to pull in authoritative documentation before coding.
-Use `@global on` when you need to edit files outside the active workspace.
-During execution the shell streams the agent's thought process (`▌` lines) while
-non-shell tools render as bright spinners with elapsed time, mirroring modern
-coding CLIs. Tool outputs
-are still truncated if they exceed the configured limits; narrow the scope or
-request additional reads for more detail.
-
-If no API key is detected, the CLI now prompts you to paste one on launch and
-safely stores it. You can update the stored key at any time with `@api` or via
-`deepseek config set api_key`.
-
-### Verify installation
-```bash
-deepseek --version
-# or use the legacy alias if preferred
-deepseek-cli --version
-```
-
-Get help for the CLI:
-```bash
-deepseek --help
-```
-
-### One-off agent run
-Invoke a single task without entering the interactive shell:
-```bash
-deepseek --prompt "Refactor the HTTP client" \
-  --workspace ~/code/project --max-steps 30 \
-  --transcript transcript.jsonl --no-global
-```
-- Combine `--follow-up "Also add tests"` to append extra instructions.
-- Pass `--read-only` to prevent write operations and `--quiet` to suppress
-  verbose progress logs.
-
-### Inline shortcuts
-Inside the interactive shell, use the new `@` commands for quick tasks:
-- `@chat "Summarise the last commit"` streams a single chat response using the
-  current session model and system prompt.
-- `@complete "def fib(n):"` issues a Codex-style completion (results print
-  immediately in the shell).
-- `@embed "vectorize me" "and me"` generates embeddings for one or more snippets.
-- `@models --filter coder --limit 5` lists available models, with `--json` for raw
-  output.
-All other `/`/`:` controls (`@workspace`, `@model`, `@transcript`, etc.) continue
-to work as before.
-
-### Transcripts and workspaces
-- Relative transcript paths under agent mode are resolved within the selected
-  workspace.
-- Chat transcripts default to `~/.config/deepseek-cli/transcripts/` when a file
-  name (not path) is supplied.
-
-### Legacy shim
-Running `python deepseek_agentic_cli.py` prints a compatibility notice and
-forwards the call to `deepseek --prompt …`, so existing automation keeps working.
-
-## Publishing to PyPI
-1. Update the version in `pyproject.toml` and commit your changes.
-2. Remove old build artifacts:
-   ```bash
-   rm -rf build dist *.egg-info
-   ```
-3. Install packaging tooling:
-   ```bash
-   python -m pip install --upgrade build twine
-   ```
-4. Build the source and wheel distributions:
-   ```bash
-   python -m build
-   ```
-5. Verify the archives:
-   ```bash
-   python -m twine check dist/*
-   ```
-6. Upload to TestPyPI (optional but recommended):
-   ```bash
-   python -m twine upload --repository testpypi dist/*
-   ```
-7. Upload to PyPI:
-   ```bash
-   python -m twine upload dist/*
-   ```
-
-After publishing, users can install with `pip install deepseek-agent`.
-
-## Development
-- `python -m deepseek_cli --version` exercises the module entry point.
-- `python -m deepseek_cli --help` displays the unified CLI options.
-- `python -m deepseek_cli config --help` shows configuration helpers.
-- Run `ruff`, `pytest`, or other tooling as required by your workflow.
-
-Contributions welcome! Open issues or pull requests to extend functionality.
+  Natural next steps: if you need parity docs for stakeholders, consider
+  dropping this comparison into DOCUMENTATION.md or publishing a README
+  appendix so contributors understand how DeepSeek CLI’s open-source executor
+  differs from the closed vendor CLIs.

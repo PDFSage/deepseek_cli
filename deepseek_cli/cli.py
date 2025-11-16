@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import shlex
 import sys
 import textwrap
+import threading
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +66,56 @@ MAIN_CONSOLE = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "ansibrightcyan bold"})
 PROMPT_MESSAGE = FormattedText([("class:prompt", "Prompt ▸ ")])
 PROMPT_CONTINUATION = FormattedText([("class:prompt", "… ")])
+
+
+class PromptAwarePrinter:
+    """Serialize breadcrumb output and keep the prompt stable while printing."""
+
+    def __init__(self, session: PromptSession, console: Console):
+        self._session = session
+        self._console = console
+        self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._closed = threading.Event()
+        self._worker = threading.Thread(
+            target=self._drain,
+            name="breadcrumb-printer",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def __call__(self, text: str) -> None:
+        if self._closed.is_set():
+            self._console.print(text, highlight=False)
+            return
+        self._queue.put(text)
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._queue.put(None)
+        self._worker.join()
+
+    def _drain(self) -> None:
+        while True:
+            payload = self._queue.get()
+            if payload is None:
+                break
+            try:
+                self._emit(payload)
+            except Exception:  # pragma: no cover - last-resort safety
+                self._console.print(payload, highlight=False)
+
+    def _emit(self, payload: str) -> None:
+        app = getattr(self._session, "app", None)
+
+        def render() -> None:
+            self._console.print(payload, highlight=False)
+
+        if app is not None and app.is_running:
+            app.run_in_terminal(render)
+        else:
+            render()
 
 
 def _prompt_continuation(width: int, line_number: int, is_soft_wrap: bool) -> FormattedText:
@@ -717,6 +769,7 @@ def _run_interactive_agent_prompt(
     state: InteractiveSessionState,
     prompt: str,
     follow_ups: List[str],
+    breadcrumb_sink: Optional[Callable[[str], None]] = None,
 ) -> None:
     workspace = state.workspace
     if not workspace.exists():
@@ -736,6 +789,7 @@ def _run_interactive_agent_prompt(
         verbose=state.verbose,
         transcript_path=state.transcript_path,
         tavily_api_key=state.tavily_api_key,
+        breadcrumb_sink=breadcrumb_sink,
     )
     try:
         agent_loop(client, options)
@@ -924,42 +978,52 @@ def run_interactive_agent_shell(
         list_models(client, options, console=MAIN_CONSOLE)
 
     session = _build_prompt_session()
+    breadcrumb_printer = PromptAwarePrinter(session, MAIN_CONSOLE)
 
-    while True:
-        try:
-            with patch_stdout():
-                raw = session.prompt(PROMPT_MESSAGE)
-        except EOFError:
-            MAIN_CONSOLE.line()
-            return 0
-        except KeyboardInterrupt:
-            MAIN_CONSOLE.line()
-            return 130
-        stripped = raw.strip()
-        if not stripped:
-            continue
-        if stripped[0] in COMMAND_PREFIXES and "\n" not in stripped:
-            should_continue = _handle_interactive_command(
-                stripped,
-                state,
-                on_api_command=handle_api_command,
-                on_tavily_command=handle_tavily_command,
-                on_chat_command=handle_chat_command,
-                on_completion_command=handle_completion_command,
-                on_embedding_command=handle_embedding_command,
-                on_models_command=handle_models_command,
-            )
-            if not should_continue:
+    try:
+        while True:
+            try:
+                with patch_stdout():
+                    raw = session.prompt(PROMPT_MESSAGE)
+            except EOFError:
+                MAIN_CONSOLE.line()
                 return 0
-            continue
+            except KeyboardInterrupt:
+                MAIN_CONSOLE.line()
+                return 130
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            if stripped[0] in COMMAND_PREFIXES and "\n" not in stripped:
+                should_continue = _handle_interactive_command(
+                    stripped,
+                    state,
+                    on_api_command=handle_api_command,
+                    on_tavily_command=handle_tavily_command,
+                    on_chat_command=handle_chat_command,
+                    on_completion_command=handle_completion_command,
+                    on_embedding_command=handle_embedding_command,
+                    on_models_command=handle_models_command,
+                )
+                if not should_continue:
+                    return 0
+                continue
 
-        final_prompt = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
-        if not final_prompt:
-            continue
-        follow_ups = _collect_follow_ups()
-        follow_ups.extend(build_test_followups(state.workspace))
-        follow_ups.extend([AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP])
-        _run_interactive_agent_prompt(client, state, final_prompt, follow_ups)
+            final_prompt = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
+            if not final_prompt:
+                continue
+            follow_ups = _collect_follow_ups()
+            follow_ups.extend(build_test_followups(state.workspace))
+            follow_ups.extend([AUTO_TEST_FOLLOW_UP, AUTO_BUG_FOLLOW_UP])
+            _run_interactive_agent_prompt(
+                client,
+                state,
+                final_prompt,
+                follow_ups,
+                breadcrumb_sink=breadcrumb_printer,
+            )
+    finally:
+        breadcrumb_printer.close()
 
 def handle_agent(args: argparse.Namespace, resolved: ResolvedConfig) -> int:
     client = create_client(resolved)

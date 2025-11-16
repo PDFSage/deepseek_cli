@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -51,6 +52,7 @@ class AgentOptions:
     verbose: bool
     transcript_path: Optional[Path]
     tavily_api_key: str
+    breadcrumb_sink: Optional[Callable[[str], None]] = None
 
 
 @dataclass
@@ -715,6 +717,142 @@ class LiveThoughtDisplay:
         self._live.update(Text(""), refresh=True)
 
 
+PLAN_BULLET_PATTERN = re.compile(r"^\s*(?:[-+*]|(?:\d+[\.)]))\s+")
+
+
+def _clean_value(value: Any) -> str:
+    text = str(value)
+    return text if len(text) <= 80 else text[:77] + "…"
+
+
+def describe_tool_call(name: str, arguments: Dict[str, Any]) -> str:
+    interesting = (
+        "path",
+        "paths",
+        "source",
+        "destination",
+        "command",
+        "pattern",
+        "query",
+        "url",
+    )
+    details = []
+    for key in interesting:
+        if key in arguments:
+            details.append(f"{key}={_clean_value(arguments[key])}")
+    if details:
+        return f"{name} ({', '.join(details)})"
+    return name
+
+
+def _summarize_text(value: Optional[str], limit: int = 80) -> str:
+    if not isinstance(value, str):
+        return ""
+    collapsed = re.sub(r"\s+", " ", value).strip()
+    if not collapsed:
+        return ""
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1] + "…"
+
+
+class BreadcrumbLogger:
+    """Produces Claude/Codex-style progress breadcrumbs."""
+
+    def __init__(
+        self,
+        console: Console,
+        max_steps: int,
+        plan_item_limit: int = 6,
+        line_sink: Optional[Callable[[str], None]] = None,
+    ):
+        self.console = console
+        self.max_steps = max_steps
+        self._plan_item_limit = plan_item_limit
+        self._last_plan_fingerprint: Optional[str] = None
+        self._last_worker_step: Optional[int] = None
+        self._line_sink = line_sink
+
+    def plan_update(self, step_index: int, text: str) -> None:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+        plan_items = self._parse_plan_items(cleaned)
+        fingerprint = "\n".join(plan_items) if plan_items else cleaned
+        if fingerprint == self._last_plan_fingerprint:
+            return
+        self._last_plan_fingerprint = fingerprint
+        if plan_items:
+            self._emit(f"[PLAN step {step_index}] Plan refreshed with {len(plan_items)} items:")
+            for idx, item in enumerate(plan_items[: self._plan_item_limit], start=1):
+                self._emit(f"    {idx}. {item}")
+            remaining = len(plan_items) - self._plan_item_limit
+            if remaining > 0:
+                self._emit(f"    … ({remaining} more items)")
+        else:
+            self._emit(f"[PLAN step {step_index}] {cleaned}")
+
+    def worker_step(self, step_index: int) -> None:
+        if step_index == self._last_worker_step:
+            return
+        self._last_worker_step = step_index
+        self._emit(f"[WORKER] Executing step {step_index}/{self.max_steps}")
+
+    def tool_started(self, step_index: int, name: str, arguments: Dict[str, Any]) -> None:
+        summary = describe_tool_call(name, arguments)
+        self._emit(f"    -> {summary}")
+
+    def tool_completed(
+        self,
+        step_index: int,
+        name: str,
+        arguments: Dict[str, Any],
+        duration: Optional[float],
+        result: Optional[str],
+    ) -> None:
+        summary = describe_tool_call(name, arguments)
+        message = f"    ✓ {summary}"
+        if duration is not None:
+            message += f" ({duration:.2f}s)"
+        snippet = _summarize_text(result)
+        if snippet:
+            message += f" – {snippet}"
+        self._emit(message)
+
+    def tool_failed(self, step_index: int, name: str, reason: str) -> None:
+        snippet = _summarize_text(reason)
+        base = f"    x {name}"
+        if snippet:
+            base += f" – {snippet}"
+        self._emit(base)
+
+    def final_response(self, step_index: int) -> None:
+        self._emit(f"[DONE] Step {step_index} returned the final response.")
+
+    def _parse_plan_items(self, text: str) -> List[str]:
+        items: List[str] = []
+        for raw_line in text.splitlines():
+            if not raw_line.strip():
+                continue
+            match = PLAN_BULLET_PATTERN.match(raw_line)
+            if match:
+                candidate = raw_line[match.end() :].strip()
+                if candidate:
+                    items.append(candidate)
+            elif items:
+                items[-1] = items[-1] + " " + raw_line.strip()
+        if items:
+            return items
+        fallback = [line.strip() for line in text.splitlines() if line.strip()]
+        return fallback if len(fallback) > 1 else []
+
+    def _emit(self, text: str) -> None:
+        if self._line_sink:
+            self._line_sink(text)
+            return
+        self.console.print(text, highlight=False)
+
+
 def tool_schemas() -> List[Dict[str, Any]]:
     return [
         {
@@ -1006,6 +1144,11 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
     specs = tool_schemas()
     thought_console = Console(stderr=True, highlight=False)
     narration_console = Console(highlight=False)
+    breadcrumbs = BreadcrumbLogger(
+        narration_console,
+        options.max_steps,
+        line_sink=options.breadcrumb_sink,
+    )
     transcript_path = options.transcript_path
     executor = ToolExecutor(
         options.workspace,
@@ -1036,45 +1179,6 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
     modifying_tools = {"write_file", "move_path", "apply_patch", "download_file"}
 
     with live_context as live_display:
-        def emit_plan_update(step_index: int, text: str) -> None:
-            cleaned = (text or "").strip()
-            if not cleaned:
-                return
-            narration_console.print(
-                f"\n[Plan step {step_index}] Implementation plan:\n{cleaned}\n",
-                highlight=False,
-            )
-
-        def _clean_value(value: Any) -> str:
-            text = str(value)
-            return text if len(text) <= 80 else text[:77] + "…"
-
-        def describe_tool_call(name: str, arguments: Dict[str, Any]) -> str:
-            interesting = (
-                "path",
-                "paths",
-                "source",
-                "destination",
-                "command",
-                "pattern",
-                "query",
-                "url",
-            )
-            details = []
-            for key in interesting:
-                if key in arguments:
-                    details.append(f"{key}={_clean_value(arguments[key])}")
-            if details:
-                return f"{name} ({', '.join(details)})"
-            return name
-
-        def mark_step_completed(step_index: int, name: str, arguments: Dict[str, Any]) -> None:
-            summary = describe_tool_call(name, arguments)
-            narration_console.print(
-                f"[Worker step {step_index}] Completed: {summary}",
-                highlight=False,
-            )
-
         def thought(message: str, *, style: str = "bright_blue") -> None:
             if not options.verbose:
                 return
@@ -1132,19 +1236,24 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                 log_to_transcript(assistant_tool_message, step_index=step)
                 plan_text = (message.content or "").strip()
                 if plan_text:
-                    emit_plan_update(step, plan_text)
+                    breadcrumbs.plan_update(step, plan_text)
+                breadcrumbs.worker_step(step)
                 for tool_call in message.tool_calls:
                     name = tool_call.function.name
                     parsed_arguments: Optional[Dict[str, Any]] = None
+                    duration: Optional[float] = None
                     try:
                         arguments = json.loads(tool_call.function.arguments or "{}")
                     except json.JSONDecodeError as exc:
                         result = f"Failed to decode arguments for {name}: {exc}"
+                        breadcrumbs.tool_failed(step, name, result)
                     else:
                         if isinstance(arguments, dict):
                             parsed_arguments = arguments
                         else:
                             parsed_arguments = {"value": arguments}
+                        breadcrumbs.tool_started(step, name, parsed_arguments)
+                        tool_start = time.perf_counter()
                         if name == "run_shell":
                             if options.verbose:
                                 thought(f"Tool request: {name}({arguments})", style="magenta")
@@ -1153,8 +1262,9 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                                 result = execute_tool(executor, name, arguments)
                             except Exception as exc:  # pragma: no cover
                                 result = f"Tool '{name}' raised an error: {exc}"
+                            finally:
+                                duration = time.perf_counter() - tool_start
                         else:
-                            start_time = time.perf_counter()
                             if options.verbose:
                                 thought(f"Executing tool ★ {name}…", style="cyan")
                             try:
@@ -1162,9 +1272,13 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                             except Exception as exc:  # pragma: no cover
                                 result = f"Tool '{name}' raised an error: {exc}"
                             finally:
+                                duration = time.perf_counter() - tool_start
                                 if options.verbose:
-                                    duration = time.perf_counter() - start_time
                                     thought(f"★ {name} completed in {duration:.2f}s", style="green")
+                        if (
+                            parsed_arguments is not None
+                        ):  # duration should be populated whenever we get here
+                            breadcrumbs.tool_completed(step, name, parsed_arguments, duration, result)
                     if isinstance(result, str) and len(result) > MAX_TOOL_RESULT_CHARS:
                         original_len = len(result)
                         result = (
@@ -1184,13 +1298,12 @@ def agent_loop(client: OpenAI, options: AgentOptions) -> None:
                         persist_output(result)
                     elif name == "run_shell" and isinstance(result, str):
                         thought(f"{name} completed · {len(result)} characters captured.", style="dim")
-                    if parsed_arguments is not None:
-                        mark_step_completed(step, name, parsed_arguments)
             else:
                 content = message.content or ""
                 assistant_message = {"role": "assistant", "content": content}
                 messages.append(assistant_message)
                 log_to_transcript(assistant_message, step_index=step)
+                breadcrumbs.final_response(step)
                 if options.verbose and isinstance(live_display, LiveThoughtDisplay):
                     live_display.clear()
                 print(content)
